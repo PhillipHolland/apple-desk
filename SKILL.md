@@ -2,10 +2,10 @@
 name: Apple Desk
 description: >-
   Use when the user wants Apple Reminders, Calendar, Notes, Contacts,
-  iMessage, or Shortcuts on their Mac: look up, organize, or draft a message.
+  iMessage, Shortcuts, or Apple Mail on their Mac: look up, organize, or draft.
   One skill for grok-reminders, grok-calendar, grok-notes, grok-contacts,
-  grok-messages, and grok-shortcuts.
-  Not Mail, not Google Calendar, not Passwords, not HomeKit, not cloud Apple APIs.
+  grok-messages, grok-shortcuts, and grok-mail.
+  Not Google Calendar, not Passwords, not HomeKit, not cloud Apple APIs.
 ---
 # Apple Desk
 
@@ -20,12 +20,12 @@ One skill for the Mac-local CLIs. Not a cloud connector. Run every command on th
 | iMessage | `grok-messages` | 0.2.0 | Messages.app JavaScript to send. `~/Library/Messages/chat.db` read-only for history. Person send rules are under Agent rules |
 | Shortcuts | `grok-shortcuts` | 0.1.0 | `/usr/bin/shortcuts`. List is safe. `run` does nothing without `--force` |
 
-Google calendars stay on the Google Calendar connector. `grok-calendar` only sees calendars already in Calendar.app. Mail stays out until its own CLI exists. Passwords and HomeKit are out on purpose.
+Google calendars stay on the Google Calendar connector. `grok-calendar` only sees calendars already in Calendar.app. Prefer the Gmail connector for phillip.b.holland@gmail.com cloud mail; `grok-mail` is for Mail.app on this Mac. Passwords and HomeKit are out on purpose.
 
 ## When not to use
 
 - No registered Mac, or the Mac is offline
-- Mail, Safari, Photos, Freeform, Journal, FaceTime, or iCloud.com until that connector exists
+- Safari, Photos, Freeform, Journal, FaceTime, or iCloud.com until that connector exists
 - Passwords, Keychain, or HomeKit. Do not probe them
 - Raw `sqlite3` against NoteStore, AddressBook, or `chat.db`. Use the CLIs. Do not copy those databases off the Mac
 - PyPI / GitHub `jwmoss/notesctl`. That is a different NoteStore exporter. Do not install it and do not name our binary `notesctl`
@@ -40,6 +40,7 @@ Google calendars stay on the Google Calendar connector. `grok-calendar` only see
 - `~/bin/grok-messages` → `~/Developer/grok-messages`
 - `~/bin/grok-calendar` → `~/Developer/grok-calendar` (also `~/.local/bin`)
 - `~/bin/grok-shortcuts` → `~/Developer/grok-shortcuts` (also `~/.local/bin`)
+- `~/bin/grok-mail` → `~/Developer/grok-mail` (also `~/.local/bin`)
 
 `~/bin/remctl` may still be on disk. Do not call it.
 
@@ -64,7 +65,7 @@ Those project folders are not git repos yet. No sudo.
 - Deletes need `--force` and an id (or an exact folder/group name the user gave). Never `empty-trash` unless they explicitly asked to empty Recently Deleted. Never `delete-folder --allow-large` or `delete-group --allow-large` unless they named that container and accepted the size. Calendar delete is one `--uid` plus `--force`. Never mass-delete events
 - Exit **3** or **-1743** ("Not authorized to send Apple events"): stop. Do not loop. Tell them the Automation click for that app (Reminders, Calendar, Notes, Contacts, or Messages) under System Settings → Privacy & Security → Automation, for **Grok Bot** / **Grok Bot Helper**
 - Calendar exit **3** with `calendar_tcc`, or events still empty after Automation is on: System Settings → Privacy & Security → Calendars → enable **Grok Bot** and **Grok Bot Helper**, then quit and reopen Grok Bot. One change, then `grok-calendar doctor` once
-- Exit **4** or **-1712**: the app is busy or a prompt is up. Do not retry while Phillip is away. `grok-calendar doctor` and `grok-reminders doctor` both already timed out on 2026-10-03. After he says the dialog is handled, one `doctor` is enough
+- Exit **4** or **-1712**: the app is busy or a prompt is up. Do not retry while Phillip is away. `grok-calendar`, `grok-reminders`, and `grok-mail` doctors timed out on 2026-10-03. After he says the dialog is handled, one `doctor` is enough
 - Messages history exit **5** or `needs_full_disk_access`: send may still work. Ask them to turn on Full Disk Access for Grok Bot and Grok Bot Helper, then reopen Grok Bot. Do not copy `chat.db` somewhere else to get around it
 - `not_in_messages_ui`: history sees the chat, Messages scripting does not. Do not retry with a different send API
 - Locked notes: skip them. Never type or request the Notes password. `pin`, `unpin`, `lock`, and `unlock` are unsupported on purpose
@@ -177,6 +178,20 @@ grok-messages send --chat-guid "GUID" --text "hello" --dry-run
 
 `doctor` prints counts, not handles. `chats` has handles and counts, not message text. Summarize; do not dump the inbox. `recent` and `search` cap at 40 rows. Search needs 2 characters and refuses more than 500 hits. Read-side `--to` can still match a chat guid, phone (`+1` assumed for 10-digit US), email, or exact display name, which may be a group. Send-side `--to` is different: person or 1:1 only. It must not deliver into a group. `refusing_group` means stop and ask; the fix is `--chat-guid` only after they name the group. Ambiguous 1:1 matches exit 2 and list guid, service, and filter only.
 
+
+```bash
+grok-mail doctor --json
+grok-mail accounts --json
+grok-mail mailboxes --json
+grok-mail list --mailbox INBOX --limit 10 --json
+grok-mail search "query" --limit 10 --json
+grok-mail show --id MSGID --json
+grok-mail draft --to "a@b.com" --subject "S" --body "text"   # needs --force to create unsent
+grok-mail gaps
+```
+
+`doctor` may exit 4 if Automation Allow is pending — do not retry while AFK. Prefer Gmail connector for cloud Gmail. `draft` without `--force` must not create anything. There is no `send` in 0.1.0. Do not paste full message bodies into shared channels.
+
 ## Demo (safe)
 
 1. `grok-reminders lists` or `today` once doctor is green. Do not paste reminder titles into a shared channel. If doctor exits 4, stop
@@ -199,7 +214,7 @@ Extra Apple connectors, highest feasibility first. Voice Memos and anything voic
 
 1. **Calendar** — built. `grok-calendar` via Calendar.app JXA. Automation, plus Calendars privacy if event data is still blocked. Ops: read, search, create, update, delete one. Fits the existing Automation click. Not the same grant as Reminders.
 2. **Shortcuts** — spike is in. `grok-shortcuts` lists and can run. No Full Disk Access. `run` needs `--force` because a shortcut can change other apps. Editing shortcut contents is not realistic. 35 shortcuts on 2026-10-03. None were run.
-3. **Mail** — Mail.app AppleScript. Read and draft are feasible; send stays gated. Large mailboxes are slow. Separate Automation toggle. Not built.
+3. **Mail** — built as spike. `grok-mail` 0.1.0: read/list/search/show + gated draft. No send. Doctor timed out 2026-10-03 (~1:13 PM CT, exit 4). Do not retry until Allow.
 4. **Freeform** — Freeform.app scripting can open a board. Search and layout edits inside a board are mostly unsupported. Not built.
 5. **Journal** — Journal.app has almost no AppleScript. The local store is TCC-walled. Do not scrape it. Not built.
 6. **Photos** — Photos.app / PhotoKit. Separate Photos privacy. Libraries are huge and iCloud originals may be unloaded. Edits are destructive. Not built.
@@ -207,3 +222,5 @@ Extra Apple connectors, highest feasibility first. Voice Memos and anything voic
 8. **Passwords** — Keychain and Passwords. Do not touch.
 
 Last verified on the office Mac, 2026-10-03: macOS 27.0, Notes 4.13, Contacts 14.0, Messages 26.0. Notes, contacts, and messages doctors were ok earlier. `grok-messages` 0.2.0: a person target that only matches a group returns `refusing_group`. A fixture and 35 real handles that also sit in groups resolved to a 1:1 or a refusal. No message was sent. `grok-calendar` doctor ~12:58 PM CT exited 4. `grok-reminders` 0.1.0 is installed; its first doctor timed out at 60s (exit 4) and was not retried. `grok-shortcuts` 0.1.0 listed 35 shortcuts; `run` without `--force` exited 2. Snapshot: `~/Developer/AUDIT.md` on that Mac.
+
+`grok-mail` 0.1.0 installed 2026-10-03 ~1:13 PM CT; doctor exit 4 automation_timeout, not retried. Draft without --force exits needs_force.
