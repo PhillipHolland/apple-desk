@@ -1,27 +1,36 @@
 # Apple Desk
 
-Mac-local Apple ecosystem tools for Grok Bot / agents: Reminders, Notes, Contacts, Messages, Calendar (and more), plus a planned single MCP server.
+Mac-local Apple ecosystem tools for Grok Bot / agents, plus a planned single MCP server.
 
 **Status:** private WIP. Keep this repo private until release.
+
+Agent skill: see [`SKILL.md`](./SKILL.md) (also installed as the Apple Desk skill in Grok Bot).
+
+## Quick install (this Mac)
+
+```bash
+./scripts/onboard.sh
+```
 
 ## CLIs (under `cli/`)
 
 | CLI | Role |
 | --- | --- |
-| `grok-reminders` | Reminders (in-house; RemCTL optional inspiration only) |
+| `grok-reminders` | Reminders (in-house; RemCTL not a dependency) |
 | `grok-notes` | Notes.app + search cache |
 | `grok-contacts` | Contacts.app |
 | `grok-messages` | Messages send (gated) + chat.db history |
 | `grok-calendar` | Calendar.app |
-| `grok-shortcuts` | Shortcuts list/run |
+| `grok-shortcuts` | Shortcuts list/run (`run` needs `--force`) |
+| `grok-mail` | Mail.app (spike / WIP) |
 
-Install bins onto `~/bin` from each `cli/*/bin/` entrypoint. Requires macOS Automation (and Full Disk Access for Messages history).
+Requires macOS Automation (and Full Disk Access for Messages history).
 
 ## Hard rules (Messages)
 
 - Never send without user pre-approval of recipient + text.
-- Never resolve a person to a group chat.
-- Prefer 1:1 participant sends.
+- Never resolve a person to a group chat (`--to` is 1:1 only).
+- Groups need `--chat-guid` after the user named that group.
 
 ## Credits
 
