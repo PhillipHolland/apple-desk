@@ -13,8 +13,8 @@ One skill for the Mac-local CLIs. Not a cloud connector. Run every command on th
 
 | Area | CLI | Version checked 2026-10-03 | Backend |
 | --- | --- | --- | --- |
-| Reminders | `grok-reminders` | 0.1.0 | Reminders.app JavaScript. In-house, not RemCTL. Pattern credit: Federico Viticci / MacStories. RemCTL is not a dependency |
-| Calendar | `grok-calendar` | 0.1.0 | Calendar.app JavaScript (`osascript`). Read by default. Rank 1 of the extra Apple connectors |
+| Reminders | `grok-reminders` | 0.1.1 | Reminders.app JavaScript. In-house, not RemCTL. Pattern credit: Federico Viticci / MacStories. RemCTL is not a dependency. Hard 20–25s timeouts; blocked on Automation Allow |
+| Calendar | `grok-calendar` | 0.1.1 | Calendar.app JavaScript (`osascript`). Read by default. Hard 20–25s timeouts; blocked on Automation Allow |
 | Notes | `grok-notes` | 0.2.0 | Notes.app JavaScript (`osascript`). Search uses a local cache |
 | Contacts | `grok-contacts` | 0.1.0 | Contacts.app JavaScript |
 | iMessage | `grok-messages` | 0.2.0 | Messages.app JavaScript to send. `~/Library/Messages/chat.db` read-only for history. Person send rules are under Agent rules |
@@ -191,7 +191,7 @@ grok-mail draft --to "a@b.com" --subject "S" --body "text"   # needs --force to 
 grok-mail gaps
 ```
 
-`doctor` may exit 4 if Automation Allow is pending — do not retry while AFK. Prefer Gmail connector for cloud Gmail. `draft` without `--force` must not create anything. There is no `send` in 0.1.0. Do not paste full message bodies into shared channels.
+`doctor` may exit 4 if Automation Allow is pending — do not retry while AFK. Prefer Gmail connector for cloud Gmail. `draft` without `--force` must not create anything. There is no `send` in 0.1.1. Do not paste full message bodies into shared channels.
 
 
 ```bash
@@ -227,13 +227,13 @@ Extra Apple connectors, highest feasibility first. Voice Memos and anything voic
 
 1. **Calendar** — built. `grok-calendar` via Calendar.app JXA. Automation, plus Calendars privacy if event data is still blocked. Ops: read, search, create, update, delete one. Fits the existing Automation click. Not the same grant as Reminders.
 2. **Shortcuts** — spike is in. `grok-shortcuts` lists and can run. No Full Disk Access. `run` needs `--force` because a shortcut can change other apps. Editing shortcut contents is not realistic. 35 shortcuts on 2026-10-03. None were run.
-3. **Mail** — built as spike. `grok-mail` 0.1.0: read/list/search/show + gated draft. No send. Doctor timed out 2026-10-03 (~1:13 PM CT, exit 4). Do not retry until Allow.
+3. **Mail** — built as spike. `grok-mail` 0.1.1: read/list/search/show + gated draft. No send. Hard 20–25s timeouts + body clip 800. Doctor timed out 2026-10-03 (~1:13 PM CT, exit 4). Do not retry until Allow. Prefer Gmail connector for cloud Gmail.
 4. **Freeform** — Freeform.app scripting can open a board. Search and layout edits inside a board are mostly unsupported. Not built.
 5. **Journal** — Journal.app has almost no AppleScript. The local store is TCC-walled. Do not scrape it. Not built.
 6. **Photos** — Photos.app / PhotoKit. Separate Photos privacy. Libraries are huge and iCloud originals may be unloaded. Edits are destructive. Not built.
 7. **HomeKit** — separate Home permission. Controlling accessories is a safety boundary. Do not touch.
 8. **Passwords** — Keychain and Passwords. Do not touch.
 
-Last verified on the office Mac, 2026-10-03: macOS 27.0, Notes 4.13, Contacts 14.0, Messages 26.0. Notes, contacts, and messages doctors were ok earlier. `grok-messages` 0.2.0: a person target that only matches a group returns `refusing_group`. A fixture and 35 real handles that also sit in groups resolved to a 1:1 or a refusal. No message was sent. `grok-calendar` doctor ~12:58 PM CT exited 4. `grok-reminders` 0.1.0 is installed; its first doctor timed out at 60s (exit 4) and was not retried. `grok-shortcuts` 0.1.0 listed 35 shortcuts; `run` without `--force` exited 2. Snapshot: `~/Developer/AUDIT.md` on that Mac.
+Last verified on the office Mac, 2026-10-03: macOS 27.0, Notes 4.13, Contacts 14.0, Messages 26.0. Notes, contacts, and messages doctors were ok earlier. `grok-messages` 0.2.0: a person target that only matches a group returns `refusing_group`. A fixture and 35 real handles that also sit in groups resolved to a 1:1 or a refusal. No message was sent. `grok-calendar` doctor ~12:58 PM CT exited 4. `grok-reminders` 0.1.1 is installed (timeouts capped 20–25s); its first doctor timed out (exit 4) and was not retried. `grok-shortcuts` 0.1.0 listed 35 shortcuts; `run` without `--force` exited 2. Snapshot: `~/Developer/AUDIT.md` on that Mac.
 
-`grok-mail` 0.1.0 installed 2026-10-03 ~1:13 PM CT; doctor exit 4 automation_timeout, not retried. Draft without --force exits needs_force.
+`grok-mail` 0.1.1 hardened 2026-10-03 (timeouts 20–25s, body clip 800); earlier doctor exit 4 not retried. Draft without --force exits needs_force.

@@ -9,7 +9,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "0.1.0"
+VERSION = "0.1.1"
 LIB = Path(__file__).resolve().parent / "reminders.js"
 
 GAPS = [
@@ -27,26 +27,34 @@ GAPS = [
 AUTH_HINT = (
     "If a dialog is on screen: Grok Bot wants access to control Reminders. Click Allow once when you are back.\n"
     "If it is gone: System Settings → Privacy & Security → Automation → Grok Bot (and Grok Bot Helper) → Reminders on.\n"
-    "Do not toggle repeatedly. One change, then run doctor again. This CLI does not use RemCTL Capability Host."
+    "Do not toggle repeatedly. One change, then run doctor again. Do not retry doctor in a loop while AFK. This CLI does not use RemCTL."
 )
+
+DOCTOR_TIMEOUT = 20
+DEFAULT_TIMEOUT = 20
+LONG_TIMEOUT = 25
 
 
 def die(code, error, message, as_json):
+    authish = error in ("automation_denied", "automation_timeout")
+    payload = {
+        "ok": False,
+        "tool": "grok-reminders",
+        "version": VERSION,
+        "error": error,
+        "code": code,
+        "message": message,
+    }
+    if authish:
+        payload["hint"] = AUTH_HINT
+        payload["settings"] = AUTH_HINT
     if as_json:
-        print(json.dumps({
-            "ok": False,
-            "tool": "grok-reminders",
-            "version": VERSION,
-            "error": error,
-            "code": code,
-            "message": message,
-            "settings": AUTH_HINT if error in ("automation_denied", "automation_timeout") else None,
-        }))
+        print(json.dumps(payload))
     else:
         print(f"grok-reminders: {error}", file=sys.stderr)
         if message:
             print(message, file=sys.stderr)
-        if error in ("automation_denied", "automation_timeout"):
+        if authish:
             print(AUTH_HINT, file=sys.stderr)
     raise SystemExit(code)
 
@@ -73,6 +81,10 @@ def call_jxa(payload, timeout, as_json):
         data = json.loads(raw)
     except json.JSONDecodeError:
         die(1, "reminders_error", "Reminders returned non-JSON: " + raw[:400], as_json)
+    if data.get("error") == "automation_denied":
+        die(3, "automation_denied", data.get("message") or "", as_json)
+    if data.get("error") == "automation_timeout":
+        die(4, "automation_timeout", (data.get("message") or "") + " Stop; do not retry in a loop.", as_json)
     return data
 
 
@@ -83,12 +95,21 @@ def emit(data, as_json, text_fn):
             "ambiguous", "bad_request", "not_found", "query_too_broad",
         }
         code = 2 if data.get("error") in soft else 1
+        if data.get("error") == "automation_denied":
+            code = 3
+        if data.get("error") == "automation_timeout":
+            code = 4
         if as_json:
             data.setdefault("tool", "grok-reminders")
             data.setdefault("version", VERSION)
+            data.setdefault("code", code)
+            if data.get("error") in ("automation_denied", "automation_timeout"):
+                data.setdefault("hint", AUTH_HINT)
             print(json.dumps(data))
         else:
             print(f"grok-reminders: {data.get('error')}: {data.get('message', '')}", file=sys.stderr)
+            if data.get("error") in ("automation_denied", "automation_timeout"):
+                print(AUTH_HINT, file=sys.stderr)
         raise SystemExit(code)
     if as_json:
         data.setdefault("tool", "grok-reminders")
@@ -100,7 +121,7 @@ def emit(data, as_json, text_fn):
 
 def cmd_doctor(args):
     as_json = args.json
-    script = call_jxa({"op": "doctor"}, 60, as_json)
+    script = call_jxa({"op": "doctor"}, DOCTOR_TIMEOUT, as_json)
     if not script.get("ok", True) and script.get("error"):
         emit(script, as_json, lambda d: None)
     data = {
@@ -130,7 +151,7 @@ def cmd_doctor(args):
 
 def cmd_lists(args):
     as_json = args.json
-    data = call_jxa({"op": "lists"}, 60, as_json)
+    data = call_jxa({"op": "lists"}, DEFAULT_TIMEOUT, as_json)
 
     def text(d):
         print(f"{d.get('count')} lists")
@@ -146,7 +167,7 @@ def _collect(as_json, list_name, with_body):
         "list": list_name,
         "withBody": with_body,
         "cap": 4000,
-    }, 90, as_json)
+    }, LONG_TIMEOUT, as_json)
 
 
 def _today_key():
@@ -237,7 +258,7 @@ def cmd_show(args):
     as_json = args.json
     if not args.id:
         die(2, "missing_id", "Pass --id.", as_json)
-    data = call_jxa({"op": "show", "id": args.id}, 90, as_json)
+    data = call_jxa({"op": "show", "id": args.id}, LONG_TIMEOUT, as_json)
     emit(data, as_json, lambda d: print(json.dumps(d.get("reminder"), indent=2)))
 
 
@@ -255,7 +276,7 @@ def cmd_add(args):
         payload["notes"] = args.notes
     if args.priority:
         payload["priority"] = args.priority
-    data = call_jxa(payload, 60, as_json)
+    data = call_jxa(payload, LONG_TIMEOUT, as_json)
 
     def text(d):
         print(f"added {d.get('title')!r} to {d.get('list')}  id {d.get('id')}")
@@ -267,7 +288,7 @@ def cmd_done(args):
     as_json = args.json
     if not args.id:
         die(2, "missing_id", "Pass --id. Nothing was changed.", as_json)
-    data = call_jxa({"op": "done", "id": args.id}, 90, as_json)
+    data = call_jxa({"op": "done", "id": args.id}, LONG_TIMEOUT, as_json)
     emit(data, as_json, lambda d: print(f"completed {d.get('id')}"))
 
 
@@ -276,12 +297,17 @@ def cmd_delete(args):
     if not args.id:
         die(2, "missing_id", "Pass --id. Nothing was deleted.", as_json)
     if not args.force:
-        die(2, "needs_force", "Refusing to delete without --force. Nothing was deleted.", as_json)
-    data = call_jxa({"op": "delete", "id": args.id}, 90, as_json)
+        die(2, "needs_force", "Refusing to delete without --force. One --id only; there is no mass delete. Nothing was deleted.", as_json)
+    data = call_jxa({"op": "delete", "id": args.id}, LONG_TIMEOUT, as_json)
     emit(data, as_json, lambda d: print(f"deleted {d.get('id')}"))
 
 
-def cmd_gaps(_args):
+def cmd_gaps(args):
+    as_json = getattr(args, "json", False)
+    data = {"ok": True, "tool": "grok-reminders", "version": VERSION, "gaps": GAPS}
+    if as_json:
+        print(json.dumps(data))
+        return
     print("grok-reminders gaps")
     for item in GAPS:
         print(f"- {item}")
@@ -347,6 +373,7 @@ def build_parser():
     delete.set_defaults(func=cmd_delete)
 
     gaps = sub.add_parser("gaps")
+    add_json(gaps)
     gaps.set_defaults(func=cmd_gaps)
     return parser
 

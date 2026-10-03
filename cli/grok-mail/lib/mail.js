@@ -9,7 +9,7 @@ function run(argv) {
     return JSON.stringify({ ok: false, error: "bad_request", message: "invalid JSON argv" });
   }
   if (payload.op === "send" || payload.send) {
-    return JSON.stringify({ ok: false, error: "unsupported", message: "grok-mail 0.1.0 does not send mail." });
+    return JSON.stringify({ ok: false, error: "unsupported", message: "grok-mail does not send mail. Prefer the Gmail connector for cloud Gmail." });
   }
   var Mail = Application("Mail");
   try {
@@ -283,9 +283,13 @@ function draftMessage(app, payload) {
   var subject = payload.subject == null ? "" : String(payload.subject);
   if (!to) return { ok: false, error: "missing_to", message: "draft needs --to." };
   if (!subject) return { ok: false, error: "missing_subject", message: "draft needs --subject." };
+  var content = payload.body == null ? "" : String(payload.body);
+  if (content.length > 4000) {
+    return { ok: false, error: "bad_request", message: "draft body is capped at 4000 characters. Nothing was created." };
+  }
   var msg = app.OutgoingMessage({
     subject: subject,
-    content: payload.body == null ? "" : String(payload.body),
+    content: content,
     visible: false
   });
   app.outgoingMessages.push(msg);
@@ -399,8 +403,8 @@ function detailOf(msg, found) {
   var row = summaryOf(msg, found);
   row.account = found.account || null;
   var body = empty(safe(function () { return String(msg.content()); }, null)) || "";
-  row.bodyTruncated = body.length > 1200;
-  row.body = body.length > 1200 ? body.slice(0, 1200) : body;
+  row.bodyTruncated = body.length > 800;
+  row.body = body.length > 800 ? body.slice(0, 800) : body;
   row.to = recipientBrief(msg, "toRecipients");
   row.cc = recipientBrief(msg, "ccRecipients");
   return row;

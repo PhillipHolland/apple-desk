@@ -9,7 +9,7 @@ import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-VERSION = "0.1.0"
+VERSION = "0.1.1"
 LIB = Path(__file__).resolve().parent / "calendar.js"
 
 GAPS = [
@@ -29,26 +29,35 @@ AUTH_HINT = (
     "If a dialog is on screen: “Grok Bot” wants access to control “Calendar”. Click Allow once.\n"
     "If it is gone, or Automation was denied: System Settings → Privacy & Security → Automation → Grok Bot (and Grok Bot Helper) → turn Calendar on.\n"
     "If Calendar still will not list events: System Settings → Privacy & Security → Calendars → enable Grok Bot and Grok Bot Helper, then quit and reopen Grok Bot.\n"
-    "Do not toggle repeatedly. One change, then run doctor again."
+    "Do not toggle repeatedly. One change, then run doctor again. Do not retry doctor in a loop while AFK."
 )
+
+# Hard cap for every Apple Event call. Prefer 20s; never hang 60s+.
+DOCTOR_TIMEOUT = 20
+DEFAULT_TIMEOUT = 20
+LONG_TIMEOUT = 25
 
 
 def die(code, error, message, as_json):
+    authish = error in ("automation_denied", "automation_timeout", "calendar_tcc")
+    payload = {
+        "ok": False,
+        "tool": "grok-calendar",
+        "version": VERSION,
+        "error": error,
+        "code": code,
+        "message": message,
+    }
+    if authish:
+        payload["hint"] = AUTH_HINT
+        payload["settings"] = AUTH_HINT
     if as_json:
-        print(json.dumps({
-            "ok": False,
-            "tool": "grok-calendar",
-            "version": VERSION,
-            "error": error,
-            "code": code,
-            "message": message,
-            "settings": AUTH_HINT if error in ("automation_denied", "automation_timeout", "calendar_tcc") else None,
-        }))
+        print(json.dumps(payload))
     else:
         print(f"grok-calendar: {error}", file=sys.stderr)
         if message:
             print(message, file=sys.stderr)
-        if error in ("automation_denied", "automation_timeout", "calendar_tcc"):
+        if authish:
             print(AUTH_HINT, file=sys.stderr)
     raise SystemExit(code)
 
@@ -92,6 +101,8 @@ def emit(data, as_json, text_fn):
         code = 2 if data.get("error") in soft else 1
         if data.get("error") in ("automation_denied", "calendar_tcc"):
             code = 3
+        if data.get("error") == "automation_timeout":
+            code = 4
         if as_json:
             data.setdefault("tool", "grok-calendar")
             data.setdefault("version", VERSION)
@@ -273,6 +284,7 @@ def build_parser():
     sp.add_argument("--all-day", action="store_true")
     sp.add_argument("--location")
     sp.add_argument("--notes")
+    sp.add_argument("--dry-run", action="store_true", help="Validate args only; do not call Calendar.app")
     add_json(sp)
 
     sp = sub.add_parser("update", help="Change one event by uid (mutation, same calendar)")
@@ -305,12 +317,12 @@ def main(argv=None):
         return
 
     if args.cmd == "doctor":
-        data = call_jxa({"op": "doctor"}, 25, as_json)
+        data = call_jxa({"op": "doctor"}, DOCTOR_TIMEOUT, as_json)
         data["version"] = VERSION
         emit(data, as_json, print_doctor)
         return
     if args.cmd == "calendars":
-        data = call_jxa({"op": "calendars"}, 30, as_json)
+        data = call_jxa({"op": "calendars"}, DEFAULT_TIMEOUT, as_json)
         emit(data, as_json, print_calendars)
         return
     if args.cmd == "list":
@@ -321,7 +333,7 @@ def main(argv=None):
             "to": end,
             "calendar": args.calendar,
             "limit": args.limit,
-        }, 60, as_json)
+        }, LONG_TIMEOUT, as_json)
         emit(data, as_json, print_events)
         return
     if args.cmd == "search":
@@ -333,7 +345,7 @@ def main(argv=None):
             "to": end,
             "calendar": args.calendar,
             "limit": args.limit,
-        }, 90, as_json)
+        }, LONG_TIMEOUT, as_json)
         emit(data, as_json, print_events)
         return
     if args.cmd == "show":
@@ -346,10 +358,32 @@ def main(argv=None):
             start, end = resolve_range(args, 180, search=True)
             payload["from"] = start
             payload["to"] = end
-        data = call_jxa(payload, 90, as_json)
+        data = call_jxa(payload, LONG_TIMEOUT, as_json)
         emit(data, as_json, print_show)
         return
     if args.cmd == "create":
+        if not (args.title or "").strip():
+            die(2, "missing_title", "create needs --title.", as_json)
+        if not (args.calendar or "").strip():
+            die(2, "missing_calendar", "create needs --calendar.", as_json)
+        if not (args.start or "").strip():
+            die(2, "bad_request", "create needs --start as YYYY-MM-DD or YYYY-MM-DD HH:MM.", as_json)
+        if args.dry_run:
+            data = {
+                "ok": True,
+                "dryRun": True,
+                "wouldCreate": True,
+                "calendar": args.calendar,
+                "title": args.title,
+                "start": args.start,
+                "end": args.end,
+                "allDay": bool(args.all_day),
+                "location": args.location,
+                "notes": args.notes,
+                "message": "dry-run: Calendar.app was not called.",
+            }
+            emit(data, as_json, lambda d: print(f"dry-run create {d.get('title')!r} on {d.get('calendar')} at {d.get('start')} (Calendar not called)"))
+            return
         data = call_jxa({
             "op": "create",
             "calendar": args.calendar,
@@ -359,7 +393,7 @@ def main(argv=None):
             "allDay": bool(args.all_day),
             "location": args.location,
             "notes": args.notes,
-        }, 45, as_json)
+        }, LONG_TIMEOUT, as_json)
         emit(data, as_json, print_write)
         return
     if args.cmd == "update":
@@ -375,13 +409,13 @@ def main(argv=None):
             "allDay": all_day,
             "location": args.location,
             "notes": args.notes,
-        }, 90, as_json)
+        }, LONG_TIMEOUT, as_json)
         emit(data, as_json, print_write)
         return
     if args.cmd == "delete":
         if not args.force:
-            die(2, "needs_force", "delete refuses without --force. This removes one event. There is no mass delete.", as_json)
-        data = call_jxa({"op": "delete", "uid": args.uid, "force": True}, 90, as_json)
+            die(2, "needs_force", "delete refuses without --force. This removes one event by --uid. There is no mass delete and no delete-all.", as_json)
+        data = call_jxa({"op": "delete", "uid": args.uid, "force": True}, LONG_TIMEOUT, as_json)
         emit(data, as_json, print_write)
         return
     die(2, "bad_request", "Unknown command", as_json)

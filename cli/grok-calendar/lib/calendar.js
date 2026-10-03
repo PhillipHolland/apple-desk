@@ -16,6 +16,7 @@ function run(argv) {
     var err = "calendar_error";
     if (msg.indexOf("-1743") !== -1 || msg.indexOf("Not authorized") !== -1) err = "automation_denied";
     if (msg.indexOf("kTCCServiceCalendar") !== -1 || msg.indexOf("Calendar access") !== -1) err = "calendar_tcc";
+    if (msg.indexOf("-1712") !== -1 || msg.toLowerCase().indexOf("timed out") !== -1) err = "automation_timeout";
     return JSON.stringify({ ok: false, error: err, message: msg });
   }
 }

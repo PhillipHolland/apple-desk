@@ -8,15 +8,17 @@ import subprocess
 import sys
 from pathlib import Path
 
-VERSION = "0.1.0"
+VERSION = "0.1.1"
 LIB = Path(__file__).resolve().parent / "mail.js"
 TOOL = "grok-mail"
 
 GAPS = [
-    "Direct MailCore / the files under ~/Library/Mail are not used. This CLI asks Mail.app over Apple Events. The grant is Automation (the calling app, often osascript, Terminal, Grok Bot, or Grok Bot Helper → Mail). A separate compose entitlement can still block draft --force even after reads work.",
+    "Prefer the Gmail connector for phillip.b.holland@gmail.com cloud mail. grok-mail is only for Mail.app on this Mac.",
+    "Direct MailCore / the files under ~/Library/Mail are not used. This CLI asks Mail.app over Apple Events. The grant is Automation (Grok Bot / Grok Bot Helper → Mail). A separate compose entitlement can still block draft --force even after reads work.",
     "Send is not implemented. There is no send subcommand and the JXA never calls Mail's send command. draft --force only saves an unsent outgoing message (intended for Drafts) with the window hidden. Agents must not add a send path without an explicit user yes.",
-    "draft without --force does not talk to Mail at all. It exits needs_force and creates nothing.",
-    "list and search do not return message bodies. show returns one body, truncated. No raw source, no full header dump, no attachments, and no attachment download.",
+    "draft without --force does not talk to Mail at all. It exits needs_force and creates nothing. draft --dry-run also skips Mail.",
+    "list and search do not return message bodies. show returns one body clipped to 800 characters. No raw source, no full header dump, no attachments, and no attachment download.",
+    "draft --force clips body to 4000 characters. Longer bodies are refused with bad_request before Mail is called.",
     "search matches subject and sender in one mailbox (default INBOX). It does not search bodies, recipients, or every mailbox. A match set over 300 messages is refused instead of dumped.",
     "list returns at most 50 messages (default 20), newest-last in Mail's scripting order, reversed so the last rows come first. It does not page a whole mailbox.",
     "Mailbox names other than the unified Inbox, Drafts, Sent, Junk, Trash, and Outbox are matched inside Mail's mailbox tree. Duplicate names need --account. Nested paths use slash names when you know them.",
@@ -27,13 +29,19 @@ GAPS = [
 
 AUTH_HINT = (
     "If a dialog is on screen: the calling app wants access to control “Mail”. Click Allow once.\n"
-    "If it is gone: System Settings → Privacy & Security → Automation → enable Mail for that app "
-    "(Grok Bot, Grok Bot Helper, Terminal, or osascript).\n"
-    "Stop. Do not retry in a loop while the dialog is waiting."
+    "If it is gone: System Settings → Privacy & Security → Automation → Grok Bot (and Grok Bot Helper) → turn Mail on.\n"
+    "Stop. Do not retry doctor in a loop while AFK. Prefer the Gmail connector for cloud Gmail."
 )
+
+DOCTOR_TIMEOUT = 20
+DEFAULT_TIMEOUT = 20
+LONG_TIMEOUT = 25
+BODY_CLIP = 800
+DRAFT_BODY_MAX = 4000
 
 
 def die(code, error, message, as_json):
+    authish = error in ("automation_denied", "automation_timeout")
     payload = {
         "ok": False,
         "tool": TOOL,
@@ -42,13 +50,16 @@ def die(code, error, message, as_json):
         "code": code,
         "message": message,
     }
+    if authish:
+        payload["hint"] = AUTH_HINT
+        payload["settings"] = AUTH_HINT
     if as_json:
         print(json.dumps(payload))
     else:
         print(f"grok-mail: {error}", file=sys.stderr)
         if message:
             print(message, file=sys.stderr)
-        if error in ("automation_denied", "automation_timeout"):
+        if authish:
             print(AUTH_HINT, file=sys.stderr)
     raise SystemExit(code)
 
@@ -99,6 +110,8 @@ def emit(data, as_json, text_fn):
             data.setdefault("version", VERSION)
             data.setdefault("code", code)
             data.setdefault("message", "")
+            if data.get("error") in ("automation_denied", "automation_timeout"):
+                data.setdefault("hint", AUTH_HINT)
             print(json.dumps(data))
         else:
             print(f"grok-mail: {data.get('error')}: {data.get('message', '')}", file=sys.stderr)
@@ -232,6 +245,7 @@ def build_parser():
     sp.add_argument("--subject", required=True)
     sp.add_argument("--body", default="")
     sp.add_argument("--force", action="store_true")
+    sp.add_argument("--dry-run", action="store_true", help="Validate args only; do not call Mail.app")
     add_json(sp)
 
     sp = sub.add_parser("gaps", help="What Mail.app can do that this CLI cannot")
@@ -247,26 +261,44 @@ def main(argv=None):
         emit(data, as_json, lambda d: print("\n".join("- " + g for g in d["gaps"])))
         return
 
-    if args.cmd == "draft" and not args.force:
-        die(
-            2,
-            "needs_force",
-            "draft refuses without --force. Nothing was created and Mail was not called. "
-            "--force saves an unsent message in Mail (window hidden). grok-mail 0.1.0 never sends.",
-            as_json,
-        )
+    if args.cmd == "draft":
+        body = args.body or ""
+        if len(body) > DRAFT_BODY_MAX:
+            die(2, "bad_request", f"draft --body is capped at {DRAFT_BODY_MAX} characters. Nothing was created.", as_json)
+        if args.dry_run:
+            data = {
+                "ok": True,
+                "dryRun": True,
+                "wouldCreate": True,
+                "sent": False,
+                "to": args.to,
+                "subject": args.subject,
+                "bodyChars": len(body),
+                "message": "dry-run: Mail.app was not called. draft still needs --force to create.",
+            }
+            emit(data, as_json, print_draft)
+            return
+        if not args.force:
+            die(
+                2,
+                "needs_force",
+                "draft refuses without --force. Nothing was created and Mail was not called. "
+                "--force saves an unsent message in Mail (window hidden). grok-mail never sends. "
+                "Prefer the Gmail connector for cloud Gmail.",
+                as_json,
+            )
 
     if args.cmd == "doctor":
-        data = call_jxa({"op": "doctor"}, 25, as_json)
+        data = call_jxa({"op": "doctor"}, DOCTOR_TIMEOUT, as_json)
         data["version"] = VERSION
         emit(data, as_json, print_doctor)
         return
     if args.cmd == "accounts":
-        data = call_jxa({"op": "accounts"}, 30, as_json)
+        data = call_jxa({"op": "accounts"}, DEFAULT_TIMEOUT, as_json)
         emit(data, as_json, print_accounts)
         return
     if args.cmd == "mailboxes":
-        data = call_jxa({"op": "mailboxes", "account": args.account}, 45, as_json)
+        data = call_jxa({"op": "mailboxes", "account": args.account}, LONG_TIMEOUT, as_json)
         emit(data, as_json, print_mailboxes)
         return
     if args.cmd == "list":
@@ -275,7 +307,7 @@ def main(argv=None):
             "mailbox": args.mailbox,
             "account": args.account,
             "limit": clamp_limit(args.limit, as_json),
-        }, 60, as_json)
+        }, LONG_TIMEOUT, as_json)
         emit(data, as_json, print_messages)
         return
     if args.cmd == "show":
@@ -284,7 +316,7 @@ def main(argv=None):
             "id": args.id,
             "mailbox": args.mailbox,
             "account": args.account,
-        }, 60, as_json)
+        }, LONG_TIMEOUT, as_json)
         emit(data, as_json, print_show)
         return
     if args.cmd == "search":
@@ -294,7 +326,7 @@ def main(argv=None):
             "mailbox": args.mailbox,
             "account": args.account,
             "limit": clamp_limit(args.limit, as_json),
-        }, 60, as_json)
+        }, LONG_TIMEOUT, as_json)
         emit(data, as_json, print_messages)
         return
     if args.cmd == "draft":
@@ -304,7 +336,7 @@ def main(argv=None):
             "subject": args.subject,
             "body": args.body,
             "force": True,
-        }, 45, as_json)
+        }, LONG_TIMEOUT, as_json)
         emit(data, as_json, print_draft)
         return
     die(2, "bad_request", "Unknown command", as_json)

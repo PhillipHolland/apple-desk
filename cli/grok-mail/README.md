@@ -1,8 +1,12 @@
 # grok-mail
 
-Apple Mail CLI for this Mac. It talks to Mail.app with `osascript -l JavaScript` (JXA). It does not read `~/Library/Mail` and it does not call a cloud mail API.
+Apple Mail CLI for this Mac. Talks to Mail.app with `osascript -l JavaScript` (JXA). It does not read `~/Library/Mail` and it does not call a cloud mail API.
 
-Reads are the default. `draft` saves one unsent message only when you pass `--force`. Version 0.1.0 has no `send` command. The script never calls Mail's send command.
+**Prefer the Gmail connector** for `phillip.b.holland@gmail.com` cloud mail. Use `grok-mail` only when you need Mail.app on this Mac.
+
+**Status (0.1.1):** Code hardened AFK. Apple Event calls hard-timeout at 20–25s (exit 4 `automation_timeout`). Doctor timed out 2026-10-03 — do not retry doctor in a loop while AFK. After you click Allow (System Settings → Privacy & Security → Automation → Grok Bot / Grok Bot Helper → Mail), run `doctor` once.
+
+Reads are the default. `draft` saves one unsent message only with `--force`. There is **no `send` command**. The script never calls Mail's send.
 
 ```bash
 grok-mail doctor
@@ -14,13 +18,12 @@ grok-mail search "invoice" --mailbox INBOX --limit 5
 grok-mail gaps
 
 grok-mail draft --to person@example.com --subject "Hello" --body "Not sent yet"
+grok-mail draft --to person@example.com --subject "Hello" --body "Not sent yet" --dry-run
 grok-mail draft --to person@example.com --subject "Hello" --body "Not sent yet" --force
 ```
 
-Add `--json` on any command. `list` and `search` print subject, date, and sender only. `show` adds a body clipped to 1200 characters. `--limit` is 1..50 (default 20).
+Add `--json` on any command. `list` / `search` print subject, date, and sender only. `show` body is clipped to **800** characters. `draft --body` is capped at **4000** characters. `--limit` is 1..50 (default 20).
 
-`draft` without `--force` exits `needs_force` and does not call Mail. Nothing is created. With `--force`, Mail gets one hidden outgoing message (`visible: false`) and `save`. That is a draft, not a send. Do not use `--force` unless a person asked for that exact draft.
+`draft` without `--force` exits `needs_force` and does not call Mail. `--dry-run` also skips Mail. With `--force`, Mail gets one hidden outgoing message and `save`. That is a draft, not a send.
 
-The first Mail command needs Automation permission for the calling app to control Mail (System Settings → Privacy & Security → Automation → Grok Bot, Grok Bot Helper, Terminal, or osascript → Mail). Error -1743 exits 3 (`automation_denied`). A hung permission dialog or error -1712 exits 4 (`automation_timeout`). One attempt, then stop. Do not retry in a loop while a dialog is up. This CLI will not click the dialog.
-
-`draft --force` can still fail after reads work, because composing is a separate Mail access group (`com.apple.mail.compose`).
+Exit **3** = `automation_denied`. Exit **4** = `automation_timeout` (dialog may be waiting). JSON includes a `hint`. One attempt, then stop. This CLI will not click the dialog.

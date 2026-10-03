@@ -16,13 +16,13 @@ Agent skill: see [`SKILL.md`](./SKILL.md) (also installed as the Apple Desk skil
 
 | CLI | Role |
 | --- | --- |
-| `grok-reminders` | Reminders (in-house; RemCTL not a dependency) |
+| `grok-reminders` | Reminders 0.1.1 (in-house; RemCTL not a dependency; blocked on Automation Allow) |
 | `grok-notes` | Notes.app + search cache |
 | `grok-contacts` | Contacts.app |
 | `grok-messages` | Messages send (gated) + chat.db history |
-| `grok-calendar` | Calendar.app |
+| `grok-calendar` | Calendar.app (0.1.1; blocked on Automation Allow) |
 | `grok-shortcuts` | Shortcuts list/run (`run` needs `--force`) |
-| `grok-mail` | Mail.app (spike / WIP) |
+| `grok-mail` | Mail.app (0.1.1; blocked on Automation Allow; prefer Gmail connector) |
 | `grok-icloud` | iCloud Drive list/read (local only; no force-download) |
 
 Requires macOS Automation (and Full Disk Access for Messages history).
