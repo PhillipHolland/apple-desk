@@ -3,10 +3,11 @@ name: Apple Desk
 description: >-
   Use when the user wants Apple Reminders, Calendar, Notes, Contacts,
   iMessage, Shortcuts, Apple Mail, iCloud Drive, a scoped Spotlight
-  search, Focus status, or Safari bookmarks on their Mac: look up, organize, or draft.
-  One skill for grok-reminders, grok-calendar, grok-notes, grok-contacts,
-  grok-messages, grok-shortcuts, grok-mail, grok-icloud, grok-spotlight,
-  grok-focus, and grok-safari.
+  search, Focus status, Safari bookmarks, or first-run local indexes
+  on their Mac: look up, organize, or draft.
+  One skill for grok-desk, grok-reminders, grok-calendar, grok-notes,
+  grok-contacts, grok-messages, grok-shortcuts, grok-mail, grok-icloud,
+  grok-spotlight, grok-focus, and grok-safari.
   Not Google Calendar, not Passwords, not HomeKit, not cloud Apple APIs.
 ---
 # Apple Desk
@@ -24,6 +25,7 @@ One skill for the Mac-local CLIs. Not a cloud connector. Run every command on th
 | Spotlight | `grok-spotlight` | 0.1.0 | `/usr/bin/mdfind`. Paths only. Default scope is Documents and Desktop. Keychain, Messages, Mail, HomeKit, Safari, and Cookies paths are refused |
 | Focus | `grok-focus` | 0.1.0 | Best-effort read of the local Do Not Disturb database on macOS 27. Does not write it. `set` needs `--force` and an existing `--shortcut` |
 | Safari bookmarks | `grok-safari` | 0.1.0 | `~/Library/Safari/Bookmarks.plist` only. Bookmarks and Reading List. No history, passwords, edits, or URL opens |
+| Desk indexes | `grok-desk` | 0.1.0 | Local onboard. Notes cache via `grok-notes reindex`. Messages metadata + FTS from `chat.db` read-only. Contacts cache off unless asked. Calendar and Reminders stubs stay `pending_allow` |
 
 Google calendars stay on the Google Calendar connector. `grok-calendar` only sees calendars already in Calendar.app. Prefer the Gmail connector for phillip.b.holland@gmail.com cloud mail; `grok-mail` is for Mail.app on this Mac. Passwords and HomeKit are out on purpose.
 
@@ -32,7 +34,7 @@ Google calendars stay on the Google Calendar connector. `grok-calendar` only see
 - No registered Mac, or the Mac is offline
 - Safari history, passwords, cookies, or iCloud.com. Bookmarks and Reading List are `grok-safari` only. Photos, Freeform, Journal, FaceTime stay out
 - Passwords, Keychain, or HomeKit. Do not probe them
-- Raw `sqlite3` against NoteStore, AddressBook, or `chat.db`. Use the CLIs. Do not copy those databases off the Mac
+- Raw `sqlite3` against NoteStore, AddressBook, or `chat.db`, except `grok-desk reindex`, which reads `chat.db` read-only into `~/.cache/grok-messages` and never copies it. Do not copy those databases off the Mac
 - PyPI / GitHub `jwmoss/notesctl`. That is a different NoteStore exporter. Do not install it and do not name our binary `notesctl`
 
 ## Install
@@ -50,6 +52,7 @@ Google calendars stay on the Google Calendar connector. `grok-calendar` only see
 - `~/bin/grok-spotlight` → `~/Developer/grok-spotlight` (also `~/.local/bin`)
 - `~/bin/grok-focus` → `~/Developer/grok-focus` (also `~/.local/bin`)
 - `~/bin/grok-safari` → `~/Developer/grok-safari` (also `~/.local/bin`)
+- `~/bin/grok-desk` → `~/Developer/grok-desk` (also `~/.local/bin`)
 
 `~/bin/remctl` may still be on disk. Do not call it.
 
@@ -62,6 +65,29 @@ Those project folders are not git repos yet. No sudo.
 3. Do not copy the RemCTL binary or Capability Host into the public repo. Credit Viticci / MacStories as the pattern only
 4. Re-run each `doctor` below. Do not commit `~/.cache/grok-notes`, `chat.db`, reminders stores, or contact exports
 5. If `https://github.com/viticci/notesctl` becomes a real public repo, switch Notes to that official CLI and stop treating `grok-notes` as the long-term tool. Until then, `grok-notes` is the Notes path. Club MacStories beta is not installed and must not be fetched unless the user hands over the binary
+
+
+## Onboard and local indexes
+
+First-run speed is a local cache under `~/.cache/grok-*`. Directories are mode `0700`. Database files are mode `0600`. Nothing is uploaded.
+
+```bash
+grok-desk doctor --json
+grok-desk onboard --json
+grok-desk reindex --json                 # notes + messages; calendar/reminders stubs
+grok-desk reindex --full --only messages
+grok-desk reindex --only contacts        # opt-in phone/email cache
+grok-desk onboard --index-contacts       # same opt-in
+grok-desk status --json
+grok-desk gaps
+```
+
+- Notes is the existing `grok-notes` cache at `~/.cache/grok-notes/index.sqlite`. `grok-desk` calls `grok-notes reindex` (incremental, or `--full`). Do not create a second notes database.
+- Messages metadata and FTS text live at `~/.cache/grok-messages/index.sqlite`, built read-only from `chat.db`. Never copy `chat.db`. Group rows may be stored. `grok-messages send` is still 1:1 unless the user named a group and you pass `--chat-guid`.
+- Contacts (`~/.cache/grok-contacts/index.sqlite`: id, name, org, phones, emails) is off unless `--index-contacts` or `reindex --only contacts`. A normal onboard does not build it.
+- Calendar and Reminders files are empty schemas with status `pending_allow`. Onboard does not call those apps. It only checks `--version` for Calendar, Reminders, and Mail. Do not run their doctors while an Allow dialog may be up.
+- Focus and Safari are separate CLIs. `grok-desk` does not index them.
+- After a notes or messages write, the cache is stale until `grok-desk reindex` or `grok-notes reindex`. Prefer `grok-desk status` over opening the sqlite files yourself.
 
 ## Agent rules
 

@@ -10,6 +10,8 @@ Agent skill: see [`SKILL.md`](./SKILL.md) (also installed as the Apple Desk skil
 
 ```bash
 ./scripts/onboard.sh
+# links CLIs if missing, then: grok-desk onboard
+# contacts cache stays off unless: ./scripts/onboard.sh --index-contacts
 ```
 
 ## CLIs (under `cli/`)
@@ -25,6 +27,7 @@ Agent skill: see [`SKILL.md`](./SKILL.md) (also installed as the Apple Desk skil
 | `grok-mail` | Mail.app 0.1.2 (blocked on Automation Allow; prefer Gmail connector) |
 | `grok-icloud` | iCloud Drive 0.1.1 list/read/summary (no force-download) |
 | `grok-spotlight` | Scoped `mdfind` (paths only; 0.1.0) |
+| `grok-desk` | Onboarding and local indexes (0.1.0). Contacts cache off by default |
 | `grok-focus` | Focus status 0.1.0 (best-effort; set needs `--force` and a shortcut) |
 | `grok-safari` | Safari bookmarks + Reading List 0.1.0 (read-only plist) |
 
@@ -42,4 +45,4 @@ Reminders-pattern inspiration: Federico Viticci / MacStories RemCTL — not vend
 
 ## Privacy
 
-Do not commit `~/.cache/grok-notes`, `chat.db`, contact dumps, or secrets.
+Do not commit `~/.cache/grok-*`, `chat.db`, contact dumps, or secrets. Indexes never leave the Mac.
