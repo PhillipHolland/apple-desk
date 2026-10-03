@@ -14,7 +14,7 @@ CACHE = "grok-calendar"
 SCHEMA = "3"
 SURFACE = "calendar"
 AUTH_DENY = {"automation_denied", "calendar_tcc"}
-SKIP_CALENDARS = frozenset({"Scheduled Reminders", "Siri Suggestions", "Birthdays"})
+SKIP_CALENDARS = frozenset({"Scheduled Reminders"})
 WINDOW_DAYS = 14
 
 SCHEMA_SQL = """
@@ -128,7 +128,7 @@ def _store(calendars, events, start, end, truncated, skipped):
             )
             event_rows += 1
         indexed_at = now_iso()
-        note = "14-day window via list --index; skipped Scheduled Reminders, Siri Suggestions, Birthdays"
+        note = "14-day window via list --index; skipped Scheduled Reminders"
         for key, value in {
             "schema": SCHEMA, "status": "ok", "indexed_at": indexed_at,
             "rows": str(event_rows), "calendars": str(cal_rows),
@@ -153,7 +153,7 @@ def build():
     bin_path = which("grok-calendar")
     if not bin_path:
         return {"ok": False, "error": "missing_cli", "rows": 0, "message": "grok-calendar is not on PATH."}
-    doctor = _run([bin_path, "doctor", "--json"], 20)
+    doctor = _run([bin_path, "doctor", "--json"], 30)
     if not doctor.get("ok"):
         if doctor.get("error") in AUTH_DENY or doctor.get("code") in (3, 4) or doctor.get("error") in {"timeout", "automation_timeout"}:
             return _pending(doctor.get("message") or doctor.get("error") or "unauthorized", True)
@@ -169,7 +169,7 @@ def build():
     events = []
     skipped = []
     for i in range(count):
-        named = _run([bin_path, "name-at", "--index", str(i), "--json"], 6)
+        named = _run([bin_path, "name-at", "--index", str(i), "--json"], 15)
         if not named.get("ok"):
             skipped.append({"index": i, "error": named.get("error") or "name_failed"})
             continue
@@ -179,8 +179,9 @@ def build():
             continue
         calendars.append({"id": "index:%d" % i, "name": name, "index": i})
         chunk = _run(
-            [bin_path, "list", "--live", "--index", str(i), "--from", start, "--to", end, "--limit", "200", "--json"],
-            16,
+            [bin_path, "list", "--live", "--light", "--index", str(i),
+             "--from", start, "--to", end, "--limit", "400", "--json"],
+            40,
         )
         if chunk.get("error") in AUTH_DENY:
             return _pending(chunk.get("message") or "unauthorized", True)
