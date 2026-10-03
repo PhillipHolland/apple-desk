@@ -44,6 +44,8 @@ def list_events(start: str, end: str, calendar: str | None, query: str | None, l
         if query:
             sql += "AND (title LIKE ? COLLATE NOCASE) "
             args.append(f"%{query}%")
+        count_sql = "SELECT count(*) FROM (" + sql + ") AS hits"
+        total = int(con.execute(count_sql, args).fetchone()[0])
         sql += "ORDER BY start_at LIMIT ?"
         args.append(int(limit))
         rows = []
@@ -64,7 +66,7 @@ def list_events(start: str, end: str, calendar: str | None, query: str | None, l
             "from": start,
             "to": end,
             "count": len(rows),
-            "truncated": False,
+            "truncated": total > len(rows),
             "events": rows,
             "path": info["path"],
             "indexedAt": info["meta"].get("indexed_at"),

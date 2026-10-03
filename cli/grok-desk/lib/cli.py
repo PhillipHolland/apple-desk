@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""grok-desk 0.1.2 — onboard a Mac and build local search indexes.
+"""grok-desk 0.1.3 — onboard a Mac and build local search indexes.
 
 Caches stay under ~/.cache (0700 dirs, 0600 databases). Nothing is uploaded.
 No Keychain. No Passwords. Mail is not called. Calendar and Reminders are
@@ -37,7 +37,7 @@ GAPS = [
     "Notes uses the existing grok-notes cache (~/.cache/grok-notes/index.sqlite). There is no second notes database.",
     "Messages stores chat guid, display name, group flag, service, last date, and message count, plus an FTS index of message text when Full Disk Access allows the read. Send rules are unchanged: grok-messages --to is 1:1 only; groups need --chat-guid.",
     "The contacts cache (id, name, org, phones, emails) is off unless onboard --index-contacts or reindex --only contacts. It is not built by a normal onboard.",
-    "Calendar reindex runs grok-calendar doctor once. When that is authorized it stores every calendar and events from today through 90 days, one calendar id at a time (uid, title, start, end, all-day, calendar name). No calendar is skipped by name. A calendar that times out is skipped for that run and not retried. Doctor timeout or denied Automation sets pending_allow and is not retried. Locations and notes are not stored.",
+    "Calendar reindex runs grok-calendar doctor once. When that is authorized it stores calendar names and events in a portable window: past 30 days through the next 90 days (override with --past-days/--future-days or GROK_CALENDAR_PAST_DAYS and GROK_CALENDAR_FUTURE_DAYS, each 0..366). One calendar index at a time (uid, title, start, end, all-day, calendar name). Only the Apple system calendar titled Scheduled Reminders is skipped by name. A wide window that times out is read in 14-day slices, and each slice is retried once. A slice over 800 events is split further by date. Doctor timeout or denied Automation sets pending_allow and is not retried. Locations and notes are not stored. grok-calendar list/search and grok-desk search read this cache first.",
     "Reminders reindex runs a names-only doctor, lean lists, then one incomplete-only collect (id, list, title, due). Notes are not stored. Timeout or denied Automation sets pending_allow and is not retried. Mail is not indexed. Focus and Safari are probed by doctor and are not part of this index.",
     "Keychain, Passwords, and HomeKit are out on purpose.",
 ]
@@ -172,6 +172,10 @@ def status_rows() -> list[dict]:
                 row["mode"] = meta.get("mode")
             if name == "calendar":
                 row["calendars"] = _count(con, "calendars")
+                row["windowFrom"] = meta.get("window_from")
+                row["windowTo"] = meta.get("window_to")
+                row["pastDays"] = meta.get("past_days")
+                row["futureDays"] = meta.get("future_days")
             if name == "reminders":
                 row["lists"] = _count(con, "lists")
             if name == "contacts" and meta.get("opt_in") != "1":
@@ -214,7 +218,7 @@ def reindex_notes(full: bool) -> dict:
     return summary
 
 
-def reindex_surface(name: str, full: bool, index_contacts: bool) -> dict:
+def reindex_surface(name: str, full: bool, index_contacts: bool, past_days: int | None = None, future_days: int | None = None) -> dict:
     if name == "notes":
         return reindex_notes(full)
     if name == "messages":
@@ -229,13 +233,13 @@ def reindex_surface(name: str, full: bool, index_contacts: bool) -> dict:
             }
         return contacts_index.build()
     if name == "calendar":
-        return calendar_index.build()
+        return calendar_index.build(past_days=past_days, future_days=future_days)
     if name == "reminders":
         return reminders_index.build()
     return {"ok": False, "surface": name, "error": "unknown_surface"}
 
 
-def do_reindex(full: bool, only: str | None, index_contacts: bool) -> dict:
+def do_reindex(full: bool, only: str | None, index_contacts: bool, past_days: int | None = None, future_days: int | None = None) -> dict:
     if only:
         names = [only]
         if only == "contacts":
@@ -244,7 +248,7 @@ def do_reindex(full: bool, only: str | None, index_contacts: bool) -> dict:
         names = ["notes", "messages", "calendar", "reminders"]
         if index_contacts:
             names.append("contacts")
-    indexes = [reindex_surface(name, full, index_contacts) for name in names]
+    indexes = [reindex_surface(name, full, index_contacts, past_days, future_days) for name in names]
     ok = all(item.get("ok") for item in indexes)
     return {"ok": ok, "tool": common.TOOL, "version": VERSION, "indexes": indexes}
 
@@ -299,6 +303,23 @@ def do_onboard(full: bool, index_contacts: bool) -> dict:
     }
 
 
+
+def _fts_query(text: str) -> str:
+    """Quoted AND of alphanumeric tokens. Empty when nothing is searchable."""
+    parts = []
+    token = []
+    for ch in text:
+        if ch.isalnum():
+            token.append(ch)
+        else:
+            if len(token) >= 2:
+                parts.append('"' + "".join(token) + '"')
+            token = []
+    if len(token) >= 2:
+        parts.append('"' + "".join(token) + '"')
+    return " AND ".join(parts[:8])
+
+
 def do_search(surface: str, query: str, limit: int) -> dict:
     """Query a local index when present. No Apple Events."""
     import sqlite3
@@ -336,22 +357,61 @@ def do_search(surface: str, query: str, limit: int) -> dict:
             ):
                 rows.append({"id": ident, "name": name, "org": org})
         elif surface == "notes":
-            # notes schema varies; try title match
             try:
-                for row in con.execute(
-                    "SELECT id, title, folder FROM notes WHERE title LIKE ? COLLATE NOCASE LIMIT ?",
-                    (needle, limit),
-                ):
-                    rows.append({"id": row[0], "title": row[1], "folder": row[2]})
+                fts = _fts_query(q)
+                seen = set()
+                if fts:
+                    for row in con.execute(
+                        "SELECT id, title, folder FROM notes WHERE rowid IN ("
+                        "SELECT rowid FROM notes_fts WHERE notes_fts MATCH ?) LIMIT ?",
+                        (fts, limit),
+                    ):
+                        seen.add(row[0])
+                        rows.append({"id": row[0], "title": row[1], "folder": row[2]})
+                if len(rows) < limit:
+                    for row in con.execute(
+                        "SELECT id, title, folder FROM notes WHERE title LIKE ? COLLATE NOCASE LIMIT ?",
+                        (needle, limit),
+                    ):
+                        if row[0] in seen:
+                            continue
+                        rows.append({"id": row[0], "title": row[1], "folder": row[2]})
+                        if len(rows) >= limit:
+                            break
             except sqlite3.OperationalError as exc:
                 return {"ok": False, "error": "schema", "message": str(exc)[:200]}
         elif surface == "messages":
             try:
+                seen = set()
                 for row in con.execute(
-                    "SELECT chat_guid, display_name, last_date FROM chats WHERE display_name LIKE ? COLLATE NOCASE LIMIT ?",
+                    "SELECT guid, display_name, last_message_date FROM chats "
+                    "WHERE display_name LIKE ? COLLATE NOCASE LIMIT ?",
                     (needle, limit),
                 ):
+                    seen.add(row[0])
                     rows.append({"chatGuid": row[0], "name": row[1], "lastDate": row[2]})
+                fts = _fts_query(q)
+                if fts and len(rows) < limit:
+                    for row in con.execute(
+                        "SELECT DISTINCT chat_guid FROM message_fts WHERE message_fts MATCH ? LIMIT ?",
+                        (fts, limit),
+                    ):
+                        guid = row[0]
+                        if not guid or guid in seen:
+                            continue
+                        chat = con.execute(
+                            "SELECT display_name, last_message_date FROM chats WHERE guid = ?",
+                            (guid,),
+                        ).fetchone()
+                        seen.add(guid)
+                        rows.append({
+                            "chatGuid": guid,
+                            "name": None if chat is None else chat[0],
+                            "lastDate": None if chat is None else chat[1],
+                            "matched": "text",
+                        })
+                        if len(rows) >= limit:
+                            break
             except sqlite3.OperationalError as exc:
                 return {"ok": False, "error": "schema", "message": str(exc)[:200]}
         else:
@@ -392,6 +452,8 @@ def build_parser() -> argparse.ArgumentParser:
     reindex.add_argument("--full", action="store_true")
     reindex.add_argument("--only", choices=SURFACES)
     reindex.add_argument("--index-contacts", action="store_true")
+    reindex.add_argument("--past-days", type=int, default=None, help="Calendar window before today (default 30, or GROK_CALENDAR_PAST_DAYS)")
+    reindex.add_argument("--future-days", type=int, default=None, help="Calendar window after today (default 90, or GROK_CALENDAR_FUTURE_DAYS)")
     add_json(reindex)
 
     status = sub.add_parser("status", help="Cache paths, counts, timestamps, size")
@@ -429,7 +491,7 @@ def main(argv=None) -> int:
         emit(data, as_json)
         return 0
     if args.cmd == "reindex":
-        data = do_reindex(args.full, args.only, args.index_contacts)
+        data = do_reindex(args.full, args.only, args.index_contacts, getattr(args, "past_days", None), getattr(args, "future_days", None))
         emit(data, as_json)
         return 0 if data["ok"] else 1
     if args.cmd == "onboard":

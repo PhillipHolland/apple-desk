@@ -17,15 +17,15 @@ One skill for the Mac-local CLIs. Not a cloud connector. Run every command on th
 | Area | CLI | Version checked 2026-10-03 | Backend |
 | --- | --- | --- | --- |
 | Reminders | `grok-reminders` | 0.1.4 | Reminders.app JavaScript. In-house, not RemCTL. Pattern credit: Federico Viticci / MacStories. RemCTL is not a dependency. Lean doctor (names only, ≤12–15s). Lists are names-only unless `--counts`. today/upcoming/search hit the local index when present (`--live` for Reminders.app). `add --dry-run` does not call Reminders |
-| Calendar | `grok-calendar` | 0.1.5 | Calendar.app JavaScript (`osascript`). Read by default. Lean doctor (names only). list/search use `~/.cache/grok-calendar` when present (`--live` for Calendar.app; skips system Scheduled Reminders + read-only unless `--all`). create/update/delete `--dry-run` stays offline |
+| Calendar | `grok-calendar` | 0.1.5 | Calendar.app JavaScript (`osascript`). Read by default. Lean doctor is count-only (no name or event walk). `list`/`search` use `~/.cache/grok-calendar` when present (`--live` plus `--index` or `--calendar` for Calendar.app). create/update/delete `--dry-run` stays offline |
 | Notes | `grok-notes` | 0.2.1 | Notes.app JavaScript (`osascript`). Search uses a local cache. `tags --folder` is cache-only |
 | Contacts | `grok-contacts` | 0.1.1 | Contacts.app JavaScript. `search --field phone or email` is refused and does not call Contacts |
 | iMessage | `grok-messages` | 0.2.1 | Messages.app JavaScript to send. `~/Library/Messages/chat.db` read-only for history and attachment metadata. Person send rules are under Agent rules |
-| Shortcuts | `grok-shortcuts` | 0.1.1 | `/usr/bin/shortcuts`. List is safe. `run` does nothing without `--force`. `--dry-run` only checks the name |
+| Shortcuts | `grok-shortcuts` | 0.1.2 | `/usr/bin/shortcuts`. List is safe. `run` and `create` do nothing without `--force`. `create` signs locally (`people-who-know-me`) and does not run the shortcut. `--dry-run` does not sign or run |
 | Spotlight | `grok-spotlight` | 0.1.0 | `/usr/bin/mdfind`. Paths only. Default scope is Documents and Desktop. Keychain, Messages, Mail, HomeKit, Safari, and Cookies paths are refused |
-| Focus | `grok-focus` | 0.1.0 | Best-effort read of the local Do Not Disturb database on macOS 27. Does not write it. `set` needs `--force` and an existing `--shortcut` |
-| Safari bookmarks | `grok-safari` | 0.1.0 | `~/Library/Safari/Bookmarks.plist` only. Bookmarks and Reading List. No history, passwords, edits, or URL opens |
-| Desk indexes | `grok-desk` | 0.1.2 | Local onboard + indexes under `~/.cache/grok-*`. Notes via `grok-notes reindex`. Messages FTS from `chat.db` read-only. Contacts off unless asked. Calendar/Reminders fill when Automation is allowed (lean doctors; incomplete-only reminders collect) |
+| Focus | `grok-focus` | 0.1.1 | Best-effort read of the local Do Not Disturb database on macOS 27. Does not write it. `set` needs `--force` and an existing `--shortcut` |
+| Safari bookmarks | `grok-safari` | 0.1.1 | `~/Library/Safari/Bookmarks.plist` only. Bookmarks and Reading List. No history, passwords, edits, or URL opens |
+| Desk indexes | `grok-desk` | 0.1.3 | Local onboard + indexes under `~/.cache/grok-*` on any Mac. Notes via `grok-notes reindex`. Messages FTS from `chat.db` read-only. Contacts off unless asked. Calendar reindex default window is past 30 days through next 90 (`--past-days` / `--future-days` or `GROK_CALENDAR_PAST_DAYS` / `GROK_CALENDAR_FUTURE_DAYS`). Reminders fill when Automation is allowed |
 
 Google calendars stay on the Google Calendar connector. `grok-calendar` only sees calendars already in Calendar.app. Prefer the Gmail connector for phillip.b.holland@gmail.com cloud mail; `grok-mail` is for Mail.app on this Mac. Passwords and HomeKit are out on purpose.
 
@@ -39,7 +39,7 @@ Google calendars stay on the Google Calendar connector. `grok-calendar` only see
 
 ## Install
 
-**Today (already on the office Mac):**
+**On a Mac that already has the CLIs (`~/bin` symlinks):**
 
 - `~/bin/grok-reminders` → `~/Developer/grok-reminders` (also `~/.local/bin`)
 - `~/bin/grok-notes` → `~/Developer/grok-notes` (also `~/.local/bin`)
@@ -76,7 +76,8 @@ grok-desk doctor --json
 grok-desk onboard --json
 grok-desk reindex --json                 # notes + messages + calendar + reminders when authorized
 grok-desk reindex --full --only messages
-grok-desk reindex --only calendar
+grok-desk reindex --only calendar          # past 30d + next 90d
+grok-desk reindex --only calendar --past-days 30 --future-days 90
 grok-desk reindex --only reminders
 grok-desk reindex --only contacts        # opt-in phone/email cache
 grok-desk onboard --index-contacts       # same opt-in
@@ -88,7 +89,9 @@ grok-desk gaps
 - Notes is the existing `grok-notes` cache at `~/.cache/grok-notes/index.sqlite`. `grok-desk` calls `grok-notes reindex` (incremental, or `--full`). Do not create a second notes database.
 - Messages metadata and FTS text live at `~/.cache/grok-messages/index.sqlite`, built read-only from `chat.db`. Never copy `chat.db`. Group rows may be stored. `grok-messages send` is still 1:1 unless the user named a group and you pass `--chat-guid`.
 - Contacts (`~/.cache/grok-contacts/index.sqlite`: id, name, org, phones, emails) is off unless `--index-contacts` or `reindex --only contacts`. A normal onboard does not build it.
-- Calendar (`~/.cache/grok-calendar`) and Reminders (`~/.cache/grok-reminders`) fill on reindex when Automation is allowed. Doctors are names-only and must stay fast. Onboard still skips live Calendar/Reminders/Mail doctors (version-only) so an Allow dialog cannot hang onboard. If status is `pending_allow`, fix Automation once, then `reindex --only calendar` / `reminders` — do not loop doctors while AFK.
+- Any Mac. Do not hardcode a machine name, account, or timezone. A fresh install is `grok-desk onboard`. Caches stay under `~/.cache/grok-*`. See `GENERALIZE.md`.
+- Calendar (`~/.cache/grok-calendar`) fills on `grok-desk reindex --only calendar` when Automation is allowed. Default window is 30 days before today through 90 days after today. Override with `--past-days` and `--future-days`, or `GROK_CALENDAR_PAST_DAYS` and `GROK_CALENDAR_FUTURE_DAYS` (each 0..366). Only the Apple system calendar titled Scheduled Reminders is skipped by name. A wide window that times out is read in 14-day slices, and each slice is retried once. A slice over 800 events is split by date. `grok-calendar doctor` is count-only and must stay fast. Onboard still skips live Calendar/Reminders/Mail doctors (version-only) so an Allow dialog cannot hang onboard. If status is `pending_allow`, fix Automation once, then reindex — do not loop doctors while AFK.
+- Reminders (`~/.cache/grok-reminders`) fill the same way. Doctor is names-only.
 - Focus and Safari are separate CLIs. `grok-desk` does not index them.
 - After a notes or messages write, the cache is stale until `grok-desk reindex` or `grok-notes reindex`. Prefer `grok-desk status` / `search` over opening the sqlite files yourself.
 
@@ -160,7 +163,7 @@ grok-calendar delete --uid EVENTUID --force
 grok-calendar gaps --json
 ```
 
-`list` prints titles and times only. Do not paste a full day into a shared channel. `show` adds location, notes, url, and recurrence for one uid they named. Search defaults to 30 days back through 180 ahead and matches title and location only. Create and update are the write commands. Delete is one event.
+`list` and `search` read the local index when it is present (no Apple Event). Pass `--live` with `--index` or `--calendar` to read Calendar.app. `list` prints titles and times only. Do not paste a full day into a shared channel. `show` adds location, notes, url, and recurrence for one uid they named. Live search defaults to 30 days back through 180 ahead. The desk index window is past 30 days and next 90 days unless overridden. Create and update are the write commands. Delete is one event.
 
 ```bash
 grok-notes doctor --json
@@ -185,11 +188,15 @@ Cache is `~/.cache/grok-notes/index.sqlite` (directory 0700, file 0600, this Mac
 grok-shortcuts doctor
 grok-shortcuts list
 grok-shortcuts list --folders
+grok-shortcuts create --name "Note" --comment "text" --dry-run
+grok-shortcuts create --name "Note" --comment "text" --output ~/Desktop/Note.shortcut --force
 grok-shortcuts run "Shortcut Name" --force
 grok-shortcuts gaps
 ```
 
-`list` and `doctor` never run a shortcut. `list --folders` lists folder names. `list --folder "Name"` lists shortcuts in that folder. This CLI does not call `shortcuts view` (that opens the app). `run` without `--force` exits 2. `run --dry-run` checks the name and does not run it. Do not pass `--force` unless the user named that shortcut and accepted its side effects.
+`list` and `doctor` never run or create a shortcut. `create` without `--force` exits `needs_force`. `--dry-run` does not sign. `--force` signs on this Mac and does not upload the shortcut. `--output` writes the file and does not open Shortcuts. Without `--output`, Shortcuts.app opens so the user can confirm the add. The new shortcut is not run. A generated shortcut is a Comment action, plus Show Result when `--text` is set. `--from file.shortcut` signs a file that already exists. This does not edit or delete shortcuts.
+
+`list --folders` lists folder names. `list --folder "Name"` lists shortcuts in that folder. This CLI does not call `shortcuts view` (that opens the app). `run` without `--force` exits 2. `run --dry-run` checks the name and does not run it. Do not pass `--force` unless the user named that shortcut and accepted its side effects.
 
 ```bash
 grok-contacts doctor --json
@@ -303,10 +310,10 @@ Safari reads Bookmarks.plist only. Do not open the URLs, do not edit bookmarks, 
 Extra Apple connectors, highest feasibility first. Voice Memos and anything voice-related are out. Calendar is built but its doctor is blocked. Shortcuts list works.
 
 1. **Calendar** — built. `grok-calendar` via Calendar.app JXA. Automation, plus Calendars privacy if event data is still blocked. Ops: read, search, create, update, delete one. Fits the existing Automation click. Not the same grant as Reminders.
-2. **Shortcuts** — built. `grok-shortcuts` 0.1.1 lists folders and can run. No Full Disk Access. `run` needs `--force` because a shortcut can change other apps. `--dry-run` does not run. Editing shortcut contents is not realistic. 35 shortcuts were listed earlier on 2026-10-03. None were run this pass.
+2. **Shortcuts** — built. `grok-shortcuts` 0.1.2 lists folders, can run, and can create. `create --force` signs locally (a Comment action, optional Show Result, or `--from` an existing file). It does not run the shortcut and does not notarize through iCloud. `run` needs `--force` because a shortcut can change other apps. `--dry-run` does not run or sign. Editing an existing shortcut's actions is not realistic.
 3. **Spotlight** — built. `grok-spotlight` 0.1.0. Paths only. No new TCC for Documents, Desktop, or Developer.
-3b. **Focus** — built read-only. `grok-focus` 0.1.0. Best-effort on macOS 27. Do not enable Focus unless the user asked and passed a shortcut.
-3c. **Safari bookmarks** — built read-only. `grok-safari` 0.1.0. Bookmarks.plist only. No history.
+3b. **Focus** — built read-only. `grok-focus` 0.1.1. Best-effort on macOS 27. Do not enable Focus unless the user asked and passed a shortcut.
+3c. **Safari bookmarks** — built read-only. `grok-safari` 0.1.1. Bookmarks.plist only. No history.
 4. **Mail** — built as spike. `grok-mail` 0.1.2: read/list/search/show + gated draft. No send. Hard 20–25s timeouts + body clip 800. Doctor timed out 2026-10-03 (~1:13 PM CT, exit 4). Do not retry until Allow. Prefer Gmail connector for cloud Gmail.
 5. **Freeform** — Freeform.app scripting can open a board. Search and layout edits inside a board are mostly unsupported. Not built.
 6. **Journal** — Journal.app has almost no AppleScript. The local store is TCC-walled. Do not scrape it. Not built.
@@ -318,4 +325,4 @@ Last verified on the office Mac, 2026-10-03: macOS 27.0, Notes 4.13, Contacts 14
 
 `grok-mail` 0.1.2: draft `--dry-run` checks subject and `@` and does not call Mail. Earlier doctor exit 4 was not retried. Draft without --force exits needs_force.
 
-Scope map: `docs/SCOPE_AUDIT.md` in the private apple-desk repo. `grok-focus` 0.1.0 and `grok-safari` 0.1.0 are read-only AFK spikes. Find My, Wallet, Journal, Photos, Voice Memos, Safari history, and Keychain stay out.
+Scope map: `docs/SCOPE_AUDIT.md` in the private apple-desk repo. `grok-focus` 0.1.1 and `grok-safari` 0.1.1 are read-only AFK spikes. Find My, Wallet, Journal, Photos, Voice Memos, Safari history, and Keychain stay out.
