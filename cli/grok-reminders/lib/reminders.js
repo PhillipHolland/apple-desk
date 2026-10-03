@@ -1,0 +1,313 @@
+// Reminders.app JXA. Local lists and reminders only. Not RemCTL.
+function run(argv) {
+  var raw = "";
+  for (var i = 0; i < argv.length; i++) {
+    if (argv[i] && argv[i] !== "--") { raw = argv[i]; break; }
+  }
+  var payload;
+  try { payload = JSON.parse(raw || "{}"); }
+  catch (e) {
+    return JSON.stringify({ok: false, error: "bad_request", message: "invalid JSON argv"});
+  }
+  var Reminders = Application("Reminders");
+  var op = payload.op;
+
+  function fail(error, message) {
+    return JSON.stringify({ok: false, error: error, message: message});
+  }
+
+  function z(n) { return (n < 10 ? "0" : "") + n; }
+
+  function asArray(v) {
+    if (v === null || v === undefined) return [];
+    var tag = Object.prototype.toString.call(v);
+    if (tag === "[object Array]") return v;
+    if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") return [v];
+    if (tag === "[object Date]") return [v];
+    try {
+      if (typeof v.length === "number") {
+        var out = [];
+        for (var i = 0; i < v.length; i++) out.push(v[i]);
+        return out;
+      }
+    } catch (e) {}
+    return [v];
+  }
+
+  function isoLocal(d) {
+    if (!d) return null;
+    var dt = (d instanceof Date) ? d : new Date(d);
+    if (isNaN(dt.getTime())) return null;
+    return dt.getFullYear() + "-" + z(dt.getMonth() + 1) + "-" + z(dt.getDate())
+      + "T" + z(dt.getHours()) + ":" + z(dt.getMinutes()) + ":" + z(dt.getSeconds());
+  }
+
+  function dayKey(d) {
+    if (!d) return null;
+    var dt = (d instanceof Date) ? d : new Date(d);
+    if (isNaN(dt.getTime())) return null;
+    return dt.getFullYear() + "-" + z(dt.getMonth() + 1) + "-" + z(dt.getDate());
+  }
+
+  function addDays(key, n) {
+    var m = String(key).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!m) return null;
+    var dt = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+    dt.setDate(dt.getDate() + n);
+    return dayKey(dt);
+  }
+
+  function priorityName(n) {
+    n = Number(n || 0);
+    if (n === 1) return "high";
+    if (n === 5) return "medium";
+    if (n === 9) return "low";
+    return "none";
+  }
+
+  function priorityValue(name) {
+    var key = String(name || "none").toLowerCase();
+    if (key === "high") return 1;
+    if (key === "medium") return 5;
+    if (key === "low") return 9;
+    if (key === "none") return 0;
+    return null;
+  }
+
+  function parseDue(s) {
+    var m = String(s || "").match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}))?$/);
+    if (!m) return null;
+    return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), m[4] ? Number(m[4]) : 9, m[5] ? Number(m[5]) : 0, 0);
+  }
+
+  function lists() {
+    var spec = Reminders.lists;
+    var n = spec.length;
+    var out = [];
+    for (var i = 0; i < n; i++) out.push(spec[i]);
+    return out;
+  }
+
+  function findList(nameOrId) {
+    var all = lists();
+    var folded = String(nameOrId || "").toLowerCase();
+    var hits = [];
+    for (var i = 0; i < all.length; i++) {
+      var list = all[i];
+      var name = "";
+      var id = "";
+      try { name = String(list.name()); } catch (e) { name = ""; }
+      try { id = String(list.id()); } catch (e2) { id = ""; }
+      if (id === nameOrId || name.toLowerCase() === folded) hits.push(list);
+    }
+    return hits;
+  }
+
+  function defaultList() {
+    try {
+      var d = Reminders.defaultList();
+      if (d) return d;
+    } catch (e) {}
+    try {
+      var d2 = Reminders.defaultList;
+      if (d2 && d2.name) return d2;
+    } catch (e2) {}
+    var named = findList("Reminders");
+    if (named.length === 1) return named[0];
+    var all = lists();
+    return all.length ? all[0] : null;
+  }
+
+  function bulk(list, withBody) {
+    var rem = list.reminders;
+    var ids = [];
+    try { ids = asArray(rem.id()); } catch (e) { return []; }
+    if (!ids.length) return [];
+    var names = [], completed = [], due = [], priority = [], flagged = [], body = [];
+    try { names = asArray(rem.name()); } catch (e2) { names = []; }
+    try { completed = asArray(rem.completed()); } catch (e3) { completed = []; }
+    try { due = asArray(rem.dueDate()); } catch (e4) { due = []; }
+    try { priority = asArray(rem.priority()); } catch (e5) { priority = []; }
+    try { flagged = asArray(rem.flagged()); } catch (e6) { flagged = []; }
+    if (withBody) {
+      try { body = asArray(rem.body()); } catch (e7) { body = []; }
+    }
+    var listName = "";
+    var listId = "";
+    try { listName = String(list.name()); } catch (e8) { listName = ""; }
+    try { listId = String(list.id()); } catch (e9) { listId = ""; }
+    var rows = [];
+    for (var i = 0; i < ids.length; i++) {
+      rows.push({
+        id: ids[i] == null ? null : String(ids[i]),
+        title: names[i] == null ? "" : String(names[i]),
+        completed: Boolean(completed[i]),
+        due: isoLocal(due[i]),
+        dueDay: dayKey(due[i]),
+        priority: priorityName(priority[i]),
+        flagged: Boolean(flagged[i]),
+        body: withBody ? (body[i] == null ? "" : String(body[i])) : undefined,
+        list: listName,
+        listId: listId,
+        index: i
+      });
+    }
+    return rows;
+  }
+
+  function clipBody(text, n) {
+    text = String(text || "");
+    if (text.length <= n) return text;
+    return text.slice(0, n);
+  }
+
+  function publicRow(row, withBody) {
+    var out = {
+      id: row.id,
+      title: row.title,
+      list: row.list,
+      listId: row.listId,
+      completed: row.completed,
+      due: row.due,
+      priority: row.priority,
+      flagged: row.flagged
+    };
+    if (withBody) out.body = clipBody(row.body, 2000);
+    return out;
+  }
+
+  if (op === "doctor") {
+    var all = lists();
+    var open = 0;
+    var total = 0;
+    for (var i = 0; i < all.length; i++) {
+      var rows = bulk(all[i], false);
+      total += rows.length;
+      for (var j = 0; j < rows.length; j++) if (!rows[j].completed) open++;
+    }
+    var defName = null;
+    var def = defaultList();
+    if (def) {
+      try { defName = String(def.name()); } catch (e) { defName = null; }
+    }
+    return JSON.stringify({
+      ok: true,
+      name: Reminders.name(),
+      version: Reminders.version(),
+      lists: all.length,
+      reminders: total,
+      incomplete: open,
+      defaultList: defName
+    });
+  }
+
+  if (op === "lists") {
+    var allLists = lists();
+    var outLists = [];
+    for (var li = 0; li < allLists.length; li++) {
+      var rows = bulk(allLists[li], false);
+      var inc = 0;
+      for (var rj = 0; rj < rows.length; rj++) if (!rows[rj].completed) inc++;
+      outLists.push({
+        name: rows.length ? rows[0].list : (function () { try { return String(allLists[li].name()); } catch (e) { return ""; } })(),
+        id: rows.length ? rows[0].listId : (function () { try { return String(allLists[li].id()); } catch (e) { return ""; } })(),
+        reminders: rows.length,
+        incomplete: inc
+      });
+    }
+    return JSON.stringify({ok: true, count: outLists.length, lists: outLists});
+  }
+
+  if (op === "collect") {
+    var wanted = payload.list || null;
+    var chosen = lists();
+    if (wanted) {
+      chosen = findList(wanted);
+      if (chosen.length === 0) return fail("not_found", "No list named " + wanted + ".");
+      if (chosen.length > 1) return fail("ambiguous", "More than one list matches " + wanted + ".");
+    }
+    var withBody = Boolean(payload.withBody);
+    var items = [];
+    var cap = Number(payload.cap || 4000);
+    var truncated = false;
+    for (var c = 0; c < chosen.length; c++) {
+      var got = bulk(chosen[c], withBody);
+      for (var g = 0; g < got.length; g++) {
+        if (items.length >= cap) { truncated = true; break; }
+        items.push(publicRow(got[g], withBody));
+      }
+      if (truncated) break;
+    }
+    return JSON.stringify({ok: true, count: items.length, truncated: truncated, reminders: items});
+  }
+
+  if (op === "show") {
+    var id = String(payload.id || "");
+    if (!id) return fail("missing_id", "Pass an id.");
+    var allShow = lists();
+    for (var s = 0; s < allShow.length; s++) {
+      var srows = bulk(allShow[s], true);
+      for (var k = 0; k < srows.length; k++) {
+        if (srows[k].id === id) return JSON.stringify({ok: true, reminder: publicRow(srows[k], true)});
+      }
+    }
+    return fail("not_found", "No reminder with that id.");
+  }
+
+  if (op === "add") {
+    var title = String(payload.title || "").trim();
+    if (!title) return fail("missing_title", "Pass a title. Nothing was added.");
+    var list;
+    if (payload.list) {
+      var hits = findList(payload.list);
+      if (hits.length === 0) return fail("not_found", "No list named " + payload.list + ". Nothing was added.");
+      if (hits.length > 1) return fail("ambiguous", "More than one list matches. Nothing was added.");
+      list = hits[0];
+    } else {
+      list = defaultList();
+      if (!list) return fail("not_found", "No Reminders list to add to. Nothing was added.");
+    }
+    var props = {name: title};
+    if (payload.notes) props.body = String(payload.notes);
+    if (payload.due) {
+      var due = parseDue(payload.due);
+      if (!due) return fail("bad_request", "Due must be YYYY-MM-DD or YYYY-MM-DD HH:MM in this Mac's local time. Nothing was added.");
+      props.dueDate = due;
+    }
+    if (payload.priority) {
+      var pv = priorityValue(payload.priority);
+      if (pv === null) return fail("bad_request", "Priority must be high, medium, low, or none. Nothing was added.");
+      props.priority = pv;
+    }
+    var created = Reminders.Reminder(props);
+    list.reminders.push(created);
+    var newId = "";
+    var listName = "";
+    try { newId = String(created.id()); } catch (e) { newId = ""; }
+    try { listName = String(list.name()); } catch (e2) { listName = ""; }
+    return JSON.stringify({ok: true, added: true, id: newId, title: title, list: listName, due: payload.due || null});
+  }
+
+  if (op === "done" || op === "delete") {
+    var rid = String(payload.id || "");
+    if (!rid) return fail("missing_id", "Pass an id. Nothing was changed.");
+    var pool = lists();
+    for (var p = 0; p < pool.length; p++) {
+      var ids;
+      try { ids = asArray(pool[p].reminders.id()); } catch (e) { continue; }
+      for (var q = 0; q < ids.length; q++) {
+        if (String(ids[q]) !== rid) continue;
+        var target = pool[p].reminders[q];
+        if (op === "done") {
+          target.completed = true;
+          return JSON.stringify({ok: true, completed: true, id: rid});
+        }
+        target.delete();
+        return JSON.stringify({ok: true, deleted: true, id: rid});
+      }
+    }
+    return fail("not_found", "No reminder with that id. Nothing was changed.");
+  }
+
+  return fail("bad_request", "unknown op");
+}

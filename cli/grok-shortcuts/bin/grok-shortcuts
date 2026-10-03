@@ -1,0 +1,11 @@
+#!/bin/bash
+# grok-shortcuts — list and run Shortcuts.app shortcuts. run needs --force.
+set -u
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR=$(cd -P "$(dirname "$SOURCE")" && pwd)
+  SOURCE=$(readlink "$SOURCE")
+  [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+ROOT=$(cd -P "$(dirname "$SOURCE")/.." && pwd)
+exec python3 "$ROOT/lib/cli.py" "$@"
