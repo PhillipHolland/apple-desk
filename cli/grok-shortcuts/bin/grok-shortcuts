@@ -1,5 +1,5 @@
 #!/bin/bash
-# grok-shortcuts — list and run Shortcuts.app shortcuts. run needs --force.
+# grok-shortcuts — list, create, and run Shortcuts.app shortcuts. create/run need --force.
 set -u
 SOURCE="${BASH_SOURCE[0]}"
 while [ -L "$SOURCE" ]; do
