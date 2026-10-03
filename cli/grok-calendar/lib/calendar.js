@@ -24,7 +24,8 @@ function run(argv) {
 function dispatch(app, payload) {
   var op = payload.op;
   if (op === "doctor") return doctor(app);
-  if (op === "calendars") return calendars(app);
+  if (op === "calendarAt") return calendarAt(app, payload);
+  if (op === "calendars") return calendars(app, payload);
   if (op === "list") return listEvents(app, payload, false);
   if (op === "search") return listEvents(app, payload, true);
   if (op === "show") return showEvent(app, payload);
@@ -35,42 +36,76 @@ function dispatch(app, payload) {
 }
 
 function doctor(app) {
-  var rows = calendarRows(app);
-  var writable = 0;
-  for (var i = 0; i < rows.length; i++) if (rows[i].writable) writable++;
+  // Count only. calendars.name() and event walks time out on large libraries.
+  // Names are a separate one-index call (calendarAt). This is any Mac, not one host.
+  var n = null;
+  try { n = app.calendars.length; } catch (e) { n = null; }
   return {
     ok: true,
     automation: "authorized",
     backend: "calendar-app-jxa",
     readOnlyDefault: true,
     calendarApp: { version: String(app.version()), id: safe(function () { return app.id(); }, "com.apple.iCal") },
-    calendars: rows.length,
-    writableCalendars: writable,
-    names: rows.map(function (r) { return r.name; })
+    calendars: n,
+    writableCalendars: null,
+    names: null,
+    note: "Doctor checks Calendar.app version and calendar count only. It does not list names or events. Use name-at --index for one name."
   };
 }
 
-function calendars(app) {
-  var rows = calendarRows(app);
-  rows.sort(function (a, b) { return String(a.name || "").localeCompare(String(b.name || "")); });
-  return { ok: true, count: rows.length, calendars: rows };
+function calendarAt(app, payload) {
+  var index = +payload.index;
+  var n = 0;
+  try { n = app.calendars.length; } catch (e) { n = 0; }
+  if (!(index >= 0) || index >= n) {
+    return { ok: false, error: "not_found", message: "Calendar index out of range.", count: n };
+  }
+  var name = "";
+  try { name = empty(app.calendars[index].name()) || "(unnamed)"; } catch (e2) { name = "(unnamed)"; }
+  return { ok: true, index: index, name: name, count: n };
 }
 
-function calendarRows(app) {
+function calendars(app, payload) {
+  var mode = (payload && payload.full) ? "full" : (payload && payload.ids) ? "ids" : "lean";
+  var rows = calendarRows(app, mode);
+  rows.sort(function (a, b) { return String(a.name || "").localeCompare(String(b.name || "")); });
+  return { ok: true, count: rows.length, calendars: rows, full: mode === "full", ids: mode !== "lean" };
+}
+
+function calendarRows(app, full) {
+  // full may be true, or the string "ids" (uids, no description/writable).
+  // Lean default: bulk names only. Same split as reminders lists vs lists --counts.
+  var mode = full === "ids" ? "ids" : full ? "full" : "lean";
+  if (mode === "lean" || mode === "ids") {
+    var rawNames = [];
+    var rawIds = [];
+    try { rawNames = asList(app.calendars.name()); } catch (e) { rawNames = []; }
+    if (mode === "ids") {
+      try { rawIds = asList(app.calendars.uid()); } catch (e2) { rawIds = []; }
+    }
+    var lean = [];
+    for (var i = 0; i < rawNames.length; i++) {
+      var id = mode === "ids" && rawIds[i] != null ? String(rawIds[i]) : null;
+      lean.push({ id: id, name: empty(rawNames[i]) || "(unnamed)", writable: null });
+    }
+    return lean;
+  }
   var n = app.calendars.length;
   if (!n) return [];
   var cals = asList(app.calendars());
   var rows = [];
-  for (var i = 0; i < cals.length; i++) {
-    var c = cals[i];
-    var writable = false;
-    try { writable = !!c.writable(); } catch (e) { writable = false; }
-    rows.push({
-      id: safe(function () { return c.uid(); }, safe(function () { return c.id(); }, null)),
-      name: empty(c.name()),
-      writable: writable,
-      description: clip(empty(safe(function () { return c.description(); }, null)), 200)
-    });
+  for (var j = 0; j < cals.length; j++) {
+    var c = cals[j];
+    var id = null;
+    try { id = c.uid(); } catch (e1) { try { id = c.id(); } catch (e2) { id = null; } }
+    var row = { id: id == null ? null : String(id), name: empty(c.name()) };
+    if (mode === "full") {
+      var writable = false;
+      try { writable = !!c.writable(); } catch (e) { writable = false; }
+      row.writable = writable;
+      row.description = clip(empty(safe(function () { return c.description(); }, null)), 200);
+    }
+    rows.push(row);
   }
   return rows;
 }
@@ -82,54 +117,55 @@ function listEvents(app, payload, isSearch) {
   }
   var range = rangeFrom(payload);
   if (!range.ok) return range;
-  var selected = selectCalendars(app, payload.calendar);
-  if (!selected.ok) return selected;
+  if (payload.calendarIndex === undefined || payload.calendarIndex === null || payload.calendarIndex === "") {
+    return {
+      ok: false,
+      error: "needs_calendar",
+      message: "Live list reads one calendar index per call. Pass --index. Do not walk every calendar in one Apple Event."
+    };
+  }
+  var index = +payload.calendarIndex;
+  var n = 0;
+  try { n = app.calendars.length; } catch (e) { n = 0; }
+  if (!(index >= 0) || index >= n) {
+    return { ok: false, error: "not_found", message: "Calendar index out of range.", count: n };
+  }
+  var cal = app.calendars[index];
+  var calName = "";
+  try { calName = empty(cal.name()) || ""; } catch (eN) { calName = ""; }
+  // startDate window only. An endDate conjunction full-walks some calendars and trips the alarm.
+  var spec = cal.events.whose({ startDate: { _greaterThan: range.start, _lessThan: range.end } });
+  var count = 0;
+  try { count = spec.length; } catch (eQ) {
+    return { ok: false, error: "calendar_error", message: "Could not query calendar index " + index + ": " + eQ };
+  }
   var limit = payload.limit || 25;
+  if (count > 800) {
+    return {
+      ok: false,
+      error: "query_too_broad",
+      count: count,
+      calendar: calName,
+      message: "That calendar has " + count + " events starting in the window. Narrow --from/--to."
+    };
+  }
   var rows = [];
-  var scanned = 0;
-  for (var i = 0; i < selected.calendars.length; i++) {
-    var cal = selected.calendars[i];
-    var spec = cal.events.whose({
-      _and: [
-        { startDate: { _lessThan: range.end } },
-        { endDate: { _greaterThan: range.start } }
-      ]
-    });
-    var n = 0;
-    try { n = spec.length; } catch (e) {
-      return { ok: false, error: "calendar_error", message: "Could not query " + cal.name() + ": " + e };
-    }
-    scanned += n;
-    if (n > 800) {
-      return {
-        ok: false,
-        error: "query_too_broad",
-        count: n,
-        calendar: cal.name(),
-        message: "Calendar " + cal.name() + " has " + n + " events in that window. Narrow --from/--to or pass --calendar."
-      };
-    }
-    if (!n) continue;
+  if (count) {
     var titles = asList(spec.summary());
     var starts = asList(spec.startDate());
-    var ends = asList(spec.endDate());
-    var uids = asList(spec.uid());
-    var allday = asList(spec.alldayEvent());
-    var locs = [];
-    try { locs = asList(spec.location()); } catch (e2) { locs = []; }
-    for (var j = 0; j < n; j++) {
+    for (var j = 0; j < count; j++) {
       var title = empty(titles[j]) || "(no title)";
-      var loc = empty(locs[j]);
-      if (isSearch && !matchesQuery(q, title, loc)) continue;
+      if (isSearch && !matchesQuery(q, title, "")) continue;
+      var startAt = formatLocal(starts[j]);
       rows.push({
-        uid: empty(uids[j]),
+        uid: String(index) + "|" + (startAt || "") + "|" + title,
         title: title,
-        start: formatLocal(starts[j]),
-        end: formatLocal(ends[j]),
-        allDay: !!allday[j],
-        calendar: empty(cal.name()),
-        calendarId: safe(function () { return cal.uid(); }, null),
-        location: loc
+        start: startAt,
+        end: null,
+        allDay: null,
+        calendar: calName,
+        calendarIndex: index,
+        location: null
       });
     }
   }
@@ -139,10 +175,12 @@ function listEvents(app, payload, isSearch) {
     query: isSearch ? q : null,
     from: formatLocal(range.start),
     to: formatLocal(range.end),
-    scanned: scanned,
+    scanned: count,
     count: rows.length,
     truncated: rows.length > limit,
-    events: rows.slice(0, limit)
+    events: rows.slice(0, limit),
+    calendar: calName,
+    calendarIndex: index
   };
 }
 
@@ -319,8 +357,22 @@ function findEvent(app, payload) {
   return findEvent(app, { uid: listed.events[0].uid });
 }
 
-function selectCalendars(app, name) {
+function selectCalendars(app, name, calendarId) {
   var cals = asList(app.calendars());
+  if (calendarId) {
+    var idq = String(calendarId);
+    var byId = [];
+    for (var i = 0; i < cals.length; i++) {
+      var id = null;
+      try { id = cals[i].uid(); } catch (e1) {
+        try { id = cals[i].id(); } catch (e2) { id = null; }
+      }
+      if (id != null && String(id) === idq) byId.push(cals[i]);
+    }
+    if (byId.length === 1) return { ok: true, calendars: byId };
+    if (byId.length > 1) return { ok: false, error: "ambiguous", message: "More than one calendar has that id." };
+    return { ok: false, error: "not_found", message: "No calendar with that id." };
+  }
   if (!name) return { ok: true, calendars: cals };
   var q = String(name).trim();
   var exact = [];

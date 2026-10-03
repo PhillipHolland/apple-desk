@@ -1,23 +1,23 @@
-"""Fill ~/.cache/grok-reminders/index.sqlite from grok-reminders.
+"""Fill ~/.cache/grok-reminders/index.sqlite from Reminders.app (via reminders.js).
 
-One doctor. If it is authorized, store list names plus incomplete reminders
-due today through 60 days (the CLI maximum): id, list, title, due, completed.
-Notes are not stored. A timeout or a denied Automation grant is pending_allow
-and is not retried in this process.
+Lean doctor + lean lists, then per-list incomplete-only collect. Stores open
+reminders (id, list, title, due, completed). Notes are not stored.
+
+Automation deny -> pending_allow. A slow list is skipped; partial indexes stay ok.
 """
 from __future__ import annotations
 
 import json
 import sqlite3
 import subprocess
+from pathlib import Path
 
 from common import db_path, now_iso, secure_db, secure_dir, which
 
 CACHE = "grok-reminders"
-SCHEMA = "2"
+SCHEMA = "3"
 SURFACE = "reminders"
-AUTH = {"timeout", "automation_timeout", "automation_denied"}
-DAYS = 60
+AUTH_DENY = {"automation_denied"}
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
@@ -49,6 +49,9 @@ def _run(cmd: list[str], timeout: float) -> dict:
             data = json.loads(raw)
         except json.JSONDecodeError:
             data = {}
+    blob = (proc.stderr or "") + "\n" + raw
+    if proc.returncode in (142, -14) or "Alarm clock" in blob:
+        return {"ok": False, "error": "timeout", "code": 4, "message": "exceeded alarm"}
     if proc.returncode != 0 or not data.get("ok"):
         err = data.get("error")
         if not err:
@@ -61,6 +64,25 @@ def _run(cmd: list[str], timeout: float) -> dict:
             "message": message[:240],
         }
     return data
+
+
+def _reminders_js() -> Path | None:
+    bin_path = which("grok-reminders")
+    if not bin_path:
+        return None
+    js = Path(bin_path).resolve().parent.parent / "lib" / "reminders.js"
+    return js if js.is_file() else None
+
+
+def _jxa(payload: dict, alarm: int) -> dict:
+    js = _reminders_js()
+    if js is None:
+        return {"ok": False, "error": "missing_cli", "message": "reminders.js was not found"}
+    cmd = [
+        "perl", "-e", "alarm shift @ARGV; exec @ARGV", str(alarm),
+        "osascript", "-l", "JavaScript", str(js), "--", json.dumps(payload),
+    ]
+    return _run(cmd, alarm + 5)
 
 
 def _pending(reason: str, called: bool) -> dict:
@@ -116,10 +138,12 @@ def build() -> dict:
             "calledApp": False,
             "message": "grok-reminders is not on PATH.",
         }
-    doctor = _run([bin_path, "doctor", "--json"], 28)
+    doctor = _jxa({"op": "doctor"}, 15)
     if not doctor.get("ok"):
-        if doctor.get("error") in AUTH or doctor.get("code") in (3, 4):
+        if doctor.get("error") in AUTH_DENY or doctor.get("error") == "automation_timeout":
             return _pending(doctor.get("message") or doctor.get("error") or "unauthorized", True)
+        if doctor.get("error") == "timeout":
+            return _pending(doctor.get("message") or "doctor timed out", True)
         return {
             "ok": False,
             "surface": SURFACE,
@@ -129,9 +153,10 @@ def build() -> dict:
             "calledApp": True,
             "message": (doctor.get("message") or "grok-reminders doctor failed")[:240],
         }
-    lists = _run([bin_path, "lists", "--json"], 28)
+
+    lists = _jxa({"op": "lists", "counts": False}, 20)
     if not lists.get("ok"):
-        if lists.get("error") in AUTH or lists.get("code") in (3, 4):
+        if lists.get("error") in AUTH_DENY:
             return _pending(lists.get("message") or lists.get("error") or "unauthorized", True)
         return {
             "ok": False,
@@ -142,19 +167,25 @@ def build() -> dict:
             "calledApp": True,
             "message": (lists.get("message") or "grok-reminders lists failed")[:240],
         }
-    upcoming = _run([bin_path, "upcoming", "--days", str(DAYS), "--json"], 40)
-    if not upcoming.get("ok"):
-        if upcoming.get("error") in AUTH or upcoming.get("code") in (3, 4):
-            return _pending(upcoming.get("message") or upcoming.get("error") or "unauthorized", True)
-        return {
-            "ok": False,
-            "surface": SURFACE,
-            "error": upcoming.get("error") or "upcoming_failed",
-            "status": "error",
-            "rows": 0,
-            "calledApp": True,
-            "message": (upcoming.get("message") or "grok-reminders upcoming failed")[:240],
-        }
+
+    list_rows_meta = list(lists.get("lists") or [])
+    collected: list[dict] = []
+    skipped: list[str] = []
+    for row in list_rows_meta:
+        name = (row.get("name") or "").strip()
+        if not name:
+            continue
+        # Per-list incomplete collect. One slow list must not fail the whole index.
+        piece = _jxa(
+            {"op": "collect", "list": name, "withBody": False, "incompleteOnly": True, "cap": 2000},
+            35,
+        )
+        if piece.get("error") in AUTH_DENY:
+            return _pending(piece.get("message") or piece.get("error") or "unauthorized", True)
+        if not piece.get("ok"):
+            skipped.append(name)
+            continue
+        collected.extend(piece.get("reminders") or [])
 
     path = db_path(CACHE)
     secure_dir(path.parent)
@@ -165,7 +196,7 @@ def build() -> dict:
         con.execute("DELETE FROM reminders")
         con.execute("DELETE FROM lists")
         list_rows = 0
-        for row in lists.get("lists") or []:
+        for row in list_rows_meta:
             name = (row.get("name") or "").strip()
             if not name:
                 continue
@@ -178,7 +209,7 @@ def build() -> dict:
             list_rows += 1
         reminder_rows = 0
         seen = set()
-        for row in upcoming.get("reminders") or []:
+        for row in collected:
             ident = str(row.get("id") or "")
             if not ident or ident in seen:
                 continue
@@ -195,16 +226,15 @@ def build() -> dict:
             )
             reminder_rows += 1
         indexed_at = now_iso()
+        status = "ok" if reminder_rows or list_rows else "ok"
         meta = {
             "schema": SCHEMA,
-            "status": "ok",
+            "status": status,
             "indexed_at": indexed_at,
             "rows": str(reminder_rows),
             "lists": str(list_rows),
-            "window_from": str(upcoming.get("from") or ""),
-            "window_to": str(upcoming.get("to") or ""),
-            "days": str(DAYS),
-            "note": "list names plus due reminders; no notes",
+            "skipped_lists": str(len(skipped)),
+            "note": "incomplete reminders only; no notes; per-list collect",
         }
         for key, value in meta.items():
             con.execute(
@@ -220,12 +250,11 @@ def build() -> dict:
         "ok": True,
         "surface": SURFACE,
         "path": str(path),
-        "status": "ok",
+        "status": status,
         "rows": reminder_rows,
         "lists": list_rows,
-        "from": upcoming.get("from"),
-        "to": upcoming.get("to"),
-        "days": DAYS,
+        "skippedLists": len(skipped),
+        "skipped": skipped,
         "indexedAt": indexed_at,
         "calledApp": True,
     }

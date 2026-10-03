@@ -9,8 +9,11 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "0.1.3"
+VERSION = "0.1.4"
 LIB = Path(__file__).resolve().parent / "reminders.js"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import cache as remcache  # noqa: E402
+
 
 GAPS = [
     "This is Reminders.app scripting, not RemCTL and not EventKit. RemCTL may still be installed on this Mac. Do not call it for Apple Desk work.",
@@ -30,9 +33,9 @@ AUTH_HINT = (
     "Do not toggle repeatedly. One change, then run doctor again. Do not retry doctor in a loop while AFK. This CLI does not use RemCTL."
 )
 
-DOCTOR_TIMEOUT = 20
+DOCTOR_TIMEOUT = 12
 DEFAULT_TIMEOUT = 20
-LONG_TIMEOUT = 25
+LONG_TIMEOUT = 60
 
 
 def die(code, error, message, as_json):
@@ -151,22 +154,29 @@ def cmd_doctor(args):
 
 def cmd_lists(args):
     as_json = args.json
-    data = call_jxa({"op": "lists"}, DEFAULT_TIMEOUT, as_json)
+    want_counts = bool(getattr(args, "counts", False))
+    data = call_jxa({"op": "lists", "counts": want_counts},
+                    LONG_TIMEOUT if want_counts else DEFAULT_TIMEOUT, as_json)
 
     def text(d):
-        print(f"{d.get('count')} lists")
+        print(f"{d.get('count')} lists" + (" (with counts)" if d.get("counts") else " (names only; pass --counts)"))
         for row in d.get("lists") or []:
-            print(f"{row.get('incomplete', 0):4} open  {row.get('reminders', 0):4} total  {row.get('name')}")
+            if d.get("counts"):
+                print(f"{row.get('incomplete', 0):4} open  {row.get('reminders', 0):4} total  {row.get('name')}")
+            else:
+                print(f"  {row.get('name')}  {row.get('id') or ''}")
 
     emit(data, as_json, text)
 
 
-def _collect(as_json, list_name, with_body):
+def _collect(as_json, list_name, with_body, include_completed=False):
     return call_jxa({
         "op": "collect",
         "list": list_name,
         "withBody": with_body,
         "cap": 4000,
+        "incompleteOnly": not include_completed,
+        "includeCompleted": bool(include_completed),
     }, LONG_TIMEOUT, as_json)
 
 
@@ -183,15 +193,21 @@ def _print_rows(rows):
 
 def cmd_today(args):
     as_json = args.json
+    today = _today_key()
+    if not getattr(args, "live", False):
+        cached = remcache.due_window(today, today, args.list)
+        if cached.get("ok"):
+            out = {"ok": True, "day": today, "count": cached["count"], "reminders": cached["reminders"], "source": "cache"}
+            emit(out, as_json, lambda d: (print(f"{d['count']} due {d['day']}  [cache]"), _print_rows(d["reminders"])))
+            return
     data = _collect(as_json, args.list, False)
     if not data.get("ok"):
         emit(data, as_json, lambda d: None)
-    today = _today_key()
     rows = [r for r in data.get("reminders") or [] if not r.get("completed") and r.get("due") and r["due"][:10] == today]
-    out = {"ok": True, "day": today, "count": len(rows), "reminders": rows, "truncated": data.get("truncated")}
+    out = {"ok": True, "day": today, "count": len(rows), "reminders": rows, "truncated": data.get("truncated"), "source": "live"}
 
     def text(d):
-        print(f"{d['count']} due {d['day']}")
+        print(f"{d['count']} due {d['day']}  [live]")
         _print_rows(d["reminders"])
 
     emit(out, as_json, text)
@@ -199,12 +215,18 @@ def cmd_today(args):
 
 def cmd_upcoming(args):
     as_json = args.json
-    data = _collect(as_json, args.list, False)
-    if not data.get("ok"):
-        emit(data, as_json, lambda d: None)
     start = _today_key()
     end_ord = datetime.strptime(start, "%Y-%m-%d").toordinal() + args.days - 1
     end = datetime.fromordinal(end_ord).strftime("%Y-%m-%d")
+    if not getattr(args, "live", False):
+        cached = remcache.due_window(start, end, args.list)
+        if cached.get("ok"):
+            out = {"ok": True, "from": start, "to": end, "days": args.days, "count": cached["count"], "reminders": cached["reminders"], "source": "cache"}
+            emit(out, as_json, lambda d: (print(f"{d['count']} due {d['from']} through {d['to']}  [cache]"), _print_rows(d["reminders"])))
+            return
+    data = _collect(as_json, args.list, False)
+    if not data.get("ok"):
+        emit(data, as_json, lambda d: None)
     rows = []
     for row in data.get("reminders") or []:
         if row.get("completed") or not row.get("due"):
@@ -213,10 +235,10 @@ def cmd_upcoming(args):
         if start <= day <= end:
             rows.append(row)
     rows.sort(key=lambda r: r.get("due") or "")
-    out = {"ok": True, "from": start, "to": end, "days": args.days, "count": len(rows), "reminders": rows, "truncated": data.get("truncated")}
+    out = {"ok": True, "from": start, "to": end, "days": args.days, "count": len(rows), "reminders": rows, "truncated": data.get("truncated"), "source": "live"}
 
     def text(d):
-        print(f"{d['count']} due {d['from']} through {d['to']}")
+        print(f"{d['count']} due {d['from']} through {d['to']}  [live]")
         _print_rows(d["reminders"])
 
     emit(out, as_json, text)
@@ -227,7 +249,12 @@ def cmd_search(args):
     query = (args.query or "").strip()
     if len(query) < 2:
         die(2, "missing_query", "Search needs at least 2 characters.", as_json)
-    data = _collect(as_json, args.list, True)
+    if not getattr(args, "live", False) and not args.include_completed:
+        cached = remcache.search(query, 40, args.list)
+        if cached.get("ok"):
+            emit(cached, as_json, lambda d: (print(f"{d['count']} matches  [cache]"), _print_rows(d["reminders"])))
+            return
+    data = _collect(as_json, args.list, True, include_completed=args.include_completed)
     if not data.get("ok"):
         emit(data, as_json, lambda d: None)
     needle = query.casefold()
@@ -245,10 +272,10 @@ def cmd_search(args):
             hits.append(item)
             if len(hits) >= 40:
                 break
-    out = {"ok": True, "query": query, "count": len(hits), "reminders": hits, "truncated": data.get("truncated")}
+    out = {"ok": True, "query": query, "count": len(hits), "reminders": hits, "truncated": data.get("truncated"), "source": "live"}
 
     def text(d):
-        print(f"{d['count']} matches")
+        print(f"{d['count']} matches  [live]")
         _print_rows(d["reminders"])
 
     emit(out, as_json, text)
@@ -346,17 +373,20 @@ def build_parser():
 
     lists = sub.add_parser("lists")
     add_json(lists)
+    lists.add_argument("--counts", action="store_true", help="walk each list for open/total (slow)")
     lists.set_defaults(func=cmd_lists)
 
     today = sub.add_parser("today")
     add_json(today)
     today.add_argument("--list")
+    today.add_argument("--live", action="store_true", help="query Reminders.app instead of the local index")
     today.set_defaults(func=cmd_today)
 
     upcoming = sub.add_parser("upcoming")
     add_json(upcoming)
     upcoming.add_argument("--days", type=int, default=7)
     upcoming.add_argument("--list")
+    upcoming.add_argument("--live", action="store_true", help="query Reminders.app instead of the local index")
     upcoming.set_defaults(func=cmd_upcoming)
 
     search = sub.add_parser("search")
@@ -364,6 +394,7 @@ def build_parser():
     search.add_argument("query")
     search.add_argument("--list")
     search.add_argument("--include-completed", action="store_true")
+    search.add_argument("--live", action="store_true", help="query Reminders.app instead of the local index")
     search.set_defaults(func=cmd_search)
 
     show = sub.add_parser("show")

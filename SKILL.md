@@ -16,8 +16,8 @@ One skill for the Mac-local CLIs. Not a cloud connector. Run every command on th
 
 | Area | CLI | Version checked 2026-10-03 | Backend |
 | --- | --- | --- | --- |
-| Reminders | `grok-reminders` | 0.1.2 | Reminders.app JavaScript. In-house, not RemCTL. Pattern credit: Federico Viticci / MacStories. RemCTL is not a dependency. Hard 20–25s timeouts; blocked on Automation Allow. `add --dry-run` does not call Reminders |
-| Calendar | `grok-calendar` | 0.1.2 | Calendar.app JavaScript (`osascript`). Read by default. Hard 20–25s timeouts; blocked on Automation Allow. create/update/delete `--dry-run` stays offline |
+| Reminders | `grok-reminders` | 0.1.4 | Reminders.app JavaScript. In-house, not RemCTL. Pattern credit: Federico Viticci / MacStories. RemCTL is not a dependency. Lean doctor (names only, ≤12–15s). Lists are names-only unless `--counts`. today/upcoming/search hit the local index when present (`--live` for Reminders.app). `add --dry-run` does not call Reminders |
+| Calendar | `grok-calendar` | 0.1.5 | Calendar.app JavaScript (`osascript`). Read by default. Lean doctor (names only). list/search use `~/.cache/grok-calendar` when present (`--live` for Calendar.app; skips system Scheduled Reminders + read-only unless `--all`). create/update/delete `--dry-run` stays offline |
 | Notes | `grok-notes` | 0.2.1 | Notes.app JavaScript (`osascript`). Search uses a local cache. `tags --folder` is cache-only |
 | Contacts | `grok-contacts` | 0.1.1 | Contacts.app JavaScript. `search --field phone or email` is refused and does not call Contacts |
 | iMessage | `grok-messages` | 0.2.1 | Messages.app JavaScript to send. `~/Library/Messages/chat.db` read-only for history and attachment metadata. Person send rules are under Agent rules |
@@ -25,7 +25,7 @@ One skill for the Mac-local CLIs. Not a cloud connector. Run every command on th
 | Spotlight | `grok-spotlight` | 0.1.0 | `/usr/bin/mdfind`. Paths only. Default scope is Documents and Desktop. Keychain, Messages, Mail, HomeKit, Safari, and Cookies paths are refused |
 | Focus | `grok-focus` | 0.1.0 | Best-effort read of the local Do Not Disturb database on macOS 27. Does not write it. `set` needs `--force` and an existing `--shortcut` |
 | Safari bookmarks | `grok-safari` | 0.1.0 | `~/Library/Safari/Bookmarks.plist` only. Bookmarks and Reading List. No history, passwords, edits, or URL opens |
-| Desk indexes | `grok-desk` | 0.1.0 | Local onboard. Notes cache via `grok-notes reindex`. Messages metadata + FTS from `chat.db` read-only. Contacts cache off unless asked. Calendar and Reminders stubs stay `pending_allow` |
+| Desk indexes | `grok-desk` | 0.1.2 | Local onboard + indexes under `~/.cache/grok-*`. Notes via `grok-notes reindex`. Messages FTS from `chat.db` read-only. Contacts off unless asked. Calendar/Reminders fill when Automation is allowed (lean doctors; incomplete-only reminders collect) |
 
 Google calendars stay on the Google Calendar connector. `grok-calendar` only sees calendars already in Calendar.app. Prefer the Gmail connector for phillip.b.holland@gmail.com cloud mail; `grok-mail` is for Mail.app on this Mac. Passwords and HomeKit are out on purpose.
 
@@ -74,20 +74,23 @@ First-run speed is a local cache under `~/.cache/grok-*`. Directories are mode `
 ```bash
 grok-desk doctor --json
 grok-desk onboard --json
-grok-desk reindex --json                 # notes + messages; calendar/reminders stubs
+grok-desk reindex --json                 # notes + messages + calendar + reminders when authorized
 grok-desk reindex --full --only messages
+grok-desk reindex --only calendar
+grok-desk reindex --only reminders
 grok-desk reindex --only contacts        # opt-in phone/email cache
 grok-desk onboard --index-contacts       # same opt-in
 grok-desk status --json
+grok-desk search calendar "query" --json # index only; no Apple Events
 grok-desk gaps
 ```
 
 - Notes is the existing `grok-notes` cache at `~/.cache/grok-notes/index.sqlite`. `grok-desk` calls `grok-notes reindex` (incremental, or `--full`). Do not create a second notes database.
 - Messages metadata and FTS text live at `~/.cache/grok-messages/index.sqlite`, built read-only from `chat.db`. Never copy `chat.db`. Group rows may be stored. `grok-messages send` is still 1:1 unless the user named a group and you pass `--chat-guid`.
 - Contacts (`~/.cache/grok-contacts/index.sqlite`: id, name, org, phones, emails) is off unless `--index-contacts` or `reindex --only contacts`. A normal onboard does not build it.
-- Calendar and Reminders files are empty schemas with status `pending_allow`. Onboard does not call those apps. It only checks `--version` for Calendar, Reminders, and Mail. Do not run their doctors while an Allow dialog may be up.
+- Calendar (`~/.cache/grok-calendar`) and Reminders (`~/.cache/grok-reminders`) fill on reindex when Automation is allowed. Doctors are names-only and must stay fast. Onboard still skips live Calendar/Reminders/Mail doctors (version-only) so an Allow dialog cannot hang onboard. If status is `pending_allow`, fix Automation once, then `reindex --only calendar` / `reminders` — do not loop doctors while AFK.
 - Focus and Safari are separate CLIs. `grok-desk` does not index them.
-- After a notes or messages write, the cache is stale until `grok-desk reindex` or `grok-notes reindex`. Prefer `grok-desk status` over opening the sqlite files yourself.
+- After a notes or messages write, the cache is stale until `grok-desk reindex` or `grok-notes reindex`. Prefer `grok-desk status` / `search` over opening the sqlite files yourself.
 
 ## Agent rules
 
@@ -100,7 +103,7 @@ grok-desk gaps
 - Deletes need `--force` and an id (or an exact folder/group name the user gave). Never `empty-trash` unless they explicitly asked to empty Recently Deleted. Never `delete-folder --allow-large` or `delete-group --allow-large` unless they named that container and accepted the size. Calendar delete is one `--uid` plus `--force`. Never mass-delete events
 - Exit **3** or **-1743** ("Not authorized to send Apple events"): stop. Do not loop. Tell them the Automation click for that app (Reminders, Calendar, Notes, Contacts, or Messages) under System Settings → Privacy & Security → Automation, for **Grok Bot** / **Grok Bot Helper**
 - Calendar exit **3** with `calendar_tcc`, or events still empty after Automation is on: System Settings → Privacy & Security → Calendars → enable **Grok Bot** and **Grok Bot Helper**, then quit and reopen Grok Bot. One change, then `grok-calendar doctor` once
-- Exit **4** or **-1712**: the app is busy or a prompt is up. Do not retry while Phillip is away. `grok-calendar`, `grok-reminders`, and `grok-mail` doctors timed out on 2026-10-03. After he says the dialog is handled, one `doctor` is enough
+- Exit **4** or **-1712**: the app is busy or a prompt is up. Do not retry in a loop while AFK. After the user confirms Allow (or opens the app), one `doctor` is enough
 - Messages history exit **5** or `needs_full_disk_access`: send may still work. Ask them to turn on Full Disk Access for Grok Bot and Grok Bot Helper, then reopen Grok Bot. Do not copy `chat.db` somewhere else to get around it
 - `not_in_messages_ui`: history sees the chat, Messages scripting does not. Do not retry with a different send API
 - Locked notes: skip them. Never type or request the Notes password. `pin`, `unpin`, `lock`, and `unlock` are unsupported on purpose
@@ -112,7 +115,7 @@ Checked 2026-10-03. Notes, contacts, and messages doctors were ok around 12:45 P
 
 | Human can | This skill can | Cannot (do not fake it) |
 | --- | --- | --- |
-| Reminders lists, due dates, complete, delete | `grok-reminders`: lists, today, upcoming, search, show, add, done, delete one with `--force` | Smart lists, sections, tags, subtasks, recurrence, location alarms, move, flag writes, sharing, Recently Deleted. `remctl` is not the path. Doctor not green yet (exit 4, not retried) |
+| Reminders lists, due dates, complete, delete | `grok-reminders`: lists, today, upcoming, search, show, add, done, delete one with `--force` | Smart lists, sections, tags, subtasks, recurrence, location alarms, move, flag writes, sharing, Recently Deleted. `remctl` is not the path. Lean doctor; reindex fills when authorized |
 | Calendar.app calendars and events | List calendars, list events in a range (titles and times), search title/location, show one uid, create, update, delete one event with `--force` | Invites, RSVP, alarms, travel time, recurrence edits, moving an event to another calendar, mass delete. Google Calendar cloud. Passwords. HomeKit |
 | Notes folders, text, checklists, search, trash | Folder tree, list, show, cached search (~0.08s here; 1215 notes), create/edit/append/rename/move, delete to Recently Deleted or permanent, folder delete, empty trash, list attachments, read shared flag, add an unchecked checklist row | Pin, lock, toggle a checkbox, duplicate, drawings, scans, tables, audio, attachment bytes, tag objects, smart folders, start a share or copy a collab link. `search --live` is the slow path (~30s). Writes do not update the cache until `reindex` |
 | Contacts cards and groups | Counts, group names, search by name or organization, show one card, create/update/delete, labeled phone/email/url, group membership | Search by phone, email, or street (`search --field phone or email` exits `unsupported_field` and does not call Contacts). Merge or unlink. Photos, posters, Memoji. Smart lists, Medical ID, emergency contacts, vCard import/export. Group membership on `show` is skipped above 80 groups |
@@ -127,10 +130,12 @@ Checked 2026-10-03. Notes, contacts, and messages doctors were ok around 12:45 P
 
 ```bash
 grok-reminders doctor --json
-grok-reminders lists --json
-grok-reminders today --json
+grok-reminders lists --json                 # names/ids only (fast)
+grok-reminders lists --counts --json        # optional heavy walk
+grok-reminders today --json                 # index when present
 grok-reminders upcoming --days 7 --json
 grok-reminders search "query" --json
+grok-reminders upcoming --days 7 --live --json   # Reminders.app
 grok-reminders show --id REMINDERID --json
 grok-reminders add --title "Title" --list "ListName" --due "YYYY-MM-DD HH:MM" --priority high
 grok-reminders done --id REMINDERID
@@ -142,8 +147,10 @@ Due times are the Mac's local time (`YYYY-MM-DD` or `YYYY-MM-DD HH:MM`; a date w
 
 ```bash
 grok-calendar doctor --json
-grok-calendar calendars --json
-grok-calendar list --today --json          # default list is today through 7 days
+grok-calendar calendars --json             # lean names
+grok-calendar calendars --full --json      # ids + descriptions
+grok-calendar list --today --json          # index when present (today→7d)
+grok-calendar list --today --live --json   # Calendar.app; skips Scheduled Reminders + read-only unless --all
 grok-calendar list --from 2026-10-03 --to 2026-10-10 --limit 20 --json
 grok-calendar search "standup" --days 14 --json
 grok-calendar show --uid EVENTUID --json

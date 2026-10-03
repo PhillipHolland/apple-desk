@@ -6,14 +6,12 @@ import shutil
 import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
-VERSION = "0.1.1"
+VERSION = "0.1.2"
 TOOL = "grok-desk"
-CHICAGO = ZoneInfo("America/Chicago")
 APPLE = datetime(2001, 1, 1, tzinfo=timezone.utc)
 
-# Mail stays version-only: this Mac forwards into Gmail, and Mail doctor can hang.
+# Mail stays version-only: Mail.app doctor can hang. Cloud mail stays on the user's mail connector.
 # Calendar and Reminders are not probed by the 5s onboard doctor loop.
 # reindex calls each once with the CLI's own timeout. Timeout or deny -> pending_allow, no retry.
 VERSION_ONLY = ("grok-calendar", "grok-reminders", "grok-mail")
@@ -44,7 +42,7 @@ def db_path(name: str) -> Path:
 
 
 def now_iso() -> str:
-    return datetime.now(CHICAGO).isoformat(timespec="seconds")
+    return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
 def apple_to_iso(value):
@@ -57,7 +55,7 @@ def apple_to_iso(value):
     if raw == 0:
         return None
     seconds = raw / 1e9 if abs(raw) > 10**12 else float(raw)
-    return (APPLE + timedelta(seconds=seconds)).astimezone(CHICAGO).isoformat(timespec="seconds")
+    return (APPLE + timedelta(seconds=seconds)).astimezone().isoformat(timespec="seconds")
 
 
 def secure_dir(path: Path) -> None:

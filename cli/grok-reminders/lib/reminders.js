@@ -118,14 +118,14 @@ function run(argv) {
     return all.length ? all[0] : null;
   }
 
-  function bulk(list, withBody) {
-    var rem = list.reminders;
+  function bulk(list, withBody, incompleteOnly) {
+    var rem = incompleteOnly ? list.reminders.whose({completed: false}) : list.reminders;
     var ids = [];
     try { ids = asArray(rem.id()); } catch (e) { return []; }
     if (!ids.length) return [];
     var names = [], completed = [], due = [], priority = [], flagged = [], body = [];
     try { names = asArray(rem.name()); } catch (e2) { names = []; }
-    try { completed = asArray(rem.completed()); } catch (e3) { completed = []; }
+    try { completed = incompleteOnly ? [] : asArray(rem.completed()); } catch (e3) { completed = []; }
     try { due = asArray(rem.dueDate()); } catch (e4) { due = []; }
     try { priority = asArray(rem.priority()); } catch (e5) { priority = []; }
     try { flagged = asArray(rem.flagged()); } catch (e6) { flagged = []; }
@@ -141,7 +141,7 @@ function run(argv) {
       rows.push({
         id: ids[i] == null ? null : String(ids[i]),
         title: names[i] == null ? "" : String(names[i]),
-        completed: Boolean(completed[i]),
+        completed: incompleteOnly ? false : Boolean(completed[i]),
         due: isoLocal(due[i]),
         dueDay: dayKey(due[i]),
         priority: priorityName(priority[i]),
@@ -212,7 +212,7 @@ function run(argv) {
       try { lid = String(allLists[li].id()); } catch (e) { lid = ""; }
       var entry = { name: lname, id: lid };
       if (withCounts) {
-        var rows = bulk(allLists[li], false);
+        var rows = bulk(allLists[li], false, false);
         var inc = 0;
         for (var rj = 0; rj < rows.length; rj++) if (!rows[rj].completed) inc++;
         entry.reminders = rows.length;
@@ -232,18 +232,20 @@ function run(argv) {
       if (chosen.length > 1) return fail("ambiguous", "More than one list matches " + wanted + ".");
     }
     var withBody = Boolean(payload.withBody);
+    var incompleteOnly = payload.incompleteOnly !== false; // default lean: open items only
+    if (payload.includeCompleted) incompleteOnly = false;
     var items = [];
     var cap = Number(payload.cap || 4000);
     var truncated = false;
     for (var c = 0; c < chosen.length; c++) {
-      var got = bulk(chosen[c], withBody);
+      var got = bulk(chosen[c], withBody, incompleteOnly);
       for (var g = 0; g < got.length; g++) {
         if (items.length >= cap) { truncated = true; break; }
         items.push(publicRow(got[g], withBody));
       }
       if (truncated) break;
     }
-    return JSON.stringify({ok: true, count: items.length, truncated: truncated, reminders: items});
+    return JSON.stringify({ok: true, count: items.length, truncated: truncated, incompleteOnly: incompleteOnly, reminders: items});
   }
 
   if (op === "show") {
@@ -251,7 +253,7 @@ function run(argv) {
     if (!id) return fail("missing_id", "Pass an id.");
     var allShow = lists();
     for (var s = 0; s < allShow.length; s++) {
-      var srows = bulk(allShow[s], true);
+      var srows = bulk(allShow[s], true, false);
       for (var k = 0; k < srows.length; k++) {
         if (srows[k].id === id) {
           var shown = publicRow(srows[k], true);

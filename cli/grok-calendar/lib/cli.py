@@ -9,8 +9,19 @@ import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-VERSION = "0.1.2"
+VERSION = "0.1.5"
 LIB = Path(__file__).resolve().parent / "calendar.js"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import cache as calcache  # noqa: E402
+
+
+def wake_calendar():
+    """Nudge Calendar.app awake without stealing focus. Safe when already running."""
+    try:
+        subprocess.run(["open", "-ga", "Calendar"], capture_output=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
 
 GAPS = [
     "Direct EventKit is not used. A command-line binary has no NSCalendarsUsageDescription, so macOS often will not show the Calendars privacy prompt for the binary. This CLI asks Calendar.app over Apple Events. The usual grant is Automation (Grok Bot or Grok Bot Helper → Calendar). If Calendar still refuses the data, also enable Grok Bot and Grok Bot Helper under Privacy & Security → Calendars, then quit and reopen Grok Bot.",
@@ -19,7 +30,7 @@ GAPS = [
     "Recurrence on show is a small object (summary, and frequency or until when Calendar exposes them). This CLI does not create or edit a series, and it does not target one occurrence versus the whole series.",
     "Events cannot be moved between calendars. update changes fields on the event's current calendar only.",
     "Subscribed and read-only calendars (holidays, birthdays, some shared calendars) can be listed but not written.",
-    "list and search stay inside a date window (list defaults to today through 7 days; search defaults to 30 days ago through 180 days ahead). They match title and location only, not notes. A calendar with more than 800 overlapping events in the window is refused.",
+    "list and search use the local index (~/.cache/grok-calendar) when present. Pass --live to read Calendar.app. Pass --calendar-id when two calendars share a name. A calendar with more than 800 overlapping events in the window is refused.",
     "show, update, and delete look up one uid by scanning calendars. That can be slow on large accounts.",
     "Google, Exchange, and iCloud calendars appear only when they are already in Calendar.app. This is not the Google Calendar connector and not iCloud.com.",
     "Focus filters, widgets, notifications, and conference-link parsing are out of scope. url is returned on show when Calendar exposes it.",
@@ -32,10 +43,11 @@ AUTH_HINT = (
     "Do not toggle repeatedly. One change, then run doctor again. Do not retry doctor in a loop while AFK."
 )
 
-# Hard cap for every Apple Event call. Prefer 20s; never hang 60s+.
-DOCTOR_TIMEOUT = 20
-DEFAULT_TIMEOUT = 20
-LONG_TIMEOUT = 25
+# Doctor stays lean (names only). Heavy list/search can take longer per calendar.
+DOCTOR_TIMEOUT = 25
+DEFAULT_TIMEOUT = 12
+NAME_TIMEOUT = 12
+LONG_TIMEOUT = 16
 
 
 def parse_stamp(value):
@@ -73,6 +85,42 @@ def die(code, error, message, as_json):
         if authish:
             print(AUTH_HINT, file=sys.stderr)
     raise SystemExit(code)
+
+
+def call_jxa_result(payload, timeout):
+    """Like call_jxa, but returns an error object instead of exiting."""
+    proc = subprocess.run(
+        ["perl", "-e", "alarm shift @ARGV; exec @ARGV", str(timeout), "osascript", "-l", "JavaScript", str(LIB), "--", json.dumps(payload)],
+        capture_output=True,
+        text=True,
+    )
+    blob = ((proc.stderr or "") + "\n" + (proc.stdout or "")).strip()
+    if proc.returncode in (-14, 142) or "Alarm clock" in blob:
+        return {"ok": False, "error": "automation_timeout", "code": 4, "message": f"Timed out after {timeout}s"}
+    if proc.returncode != 0:
+        if "-1743" in blob or "Not authorized" in blob:
+            return {"ok": False, "error": "automation_denied", "code": 3, "message": blob[:240]}
+        if "-1712" in blob or "timed out" in blob.lower():
+            return {"ok": False, "error": "automation_timeout", "code": 4, "message": blob[:240]}
+        return {"ok": False, "error": "calendar_error", "code": 1, "message": (blob or "osascript failed")[:240]}
+    raw = (proc.stdout or "").strip()
+    if not raw:
+        return {"ok": False, "error": "calendar_error", "code": 1, "message": "empty response"}
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return {"ok": False, "error": "calendar_error", "code": 1, "message": "non-JSON"}
+    return data
+
+
+def calendar_count():
+    data = call_jxa_result({"op": "doctor"}, DOCTOR_TIMEOUT)
+    if not data.get("ok"):
+        return data
+    try:
+        return {"ok": True, "calendars": int(data.get("calendars") or 0), "doctor": data}
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "calendar_error", "message": "doctor did not return a count"}
 
 
 def call_jxa(payload, timeout, as_json):
@@ -155,7 +203,7 @@ def print_doctor(data):
     print(f"automation: {data.get('automation')}")
     print("writes: off unless you run create, update, or delete --force")
     print(f"Calendar {app.get('version')} ({app.get('id')})")
-    print(f"calendars: {data.get('calendars')}   writable: {data.get('writableCalendars')}")
+    print(f"calendars: {data.get('calendars')}   writable: {data.get('writableCalendars') if data.get('writableCalendars') is not None else '(see calendars)'}")
 
 
 def print_calendars(data):
@@ -167,10 +215,11 @@ def print_calendars(data):
 
 def print_events(data):
     window = f"{data.get('from')} → {data.get('to')}"
+    src = f"  [{data.get('source')}]" if data.get("source") else ""
     if data.get("query"):
-        print(f"{data.get('count')} match(es) for {data.get('query')!r}  {window}")
+        print(f"{data.get('count')} match(es) for {data.get('query')!r}  {window}{src}")
     else:
-        print(f"{data.get('count')} event(s)  {window}")
+        print(f"{data.get('count')} event(s)  {window}{src}")
     for row in data.get("events") or []:
         if row.get("allDay"):
             when = str(row.get("start") or "")[:10] + " all-day"
@@ -219,7 +268,9 @@ def add_range(sp, default_days):
     sp.add_argument("--to", dest="to_date", help="YYYY-MM-DD (inclusive) or YYYY-MM-DD HH:MM")
     sp.add_argument("--days", type=int, default=None, help=f"window length when --to is omitted (default {default_days})")
     sp.add_argument("--today", action="store_true")
-    sp.add_argument("--calendar", help="exact calendar name")
+    sp.add_argument("--calendar", help="exact calendar name; resolved to indexes, one Apple Event each")
+    sp.add_argument("--calendar-id", dest="calendar_id", help="ignored for live list; indexes are the portable key")
+    sp.add_argument("--index", type=int, default=None, help="one calendar index from doctor/name-at")
     sp.add_argument("--limit", type=int, default=25)
 
 
@@ -269,16 +320,27 @@ def build_parser():
     sp = sub.add_parser("doctor", help="Check Automation access and calendar counts")
     add_json(sp)
 
-    sp = sub.add_parser("calendars", help="List calendars (no events)")
+    sp = sub.add_parser("calendars", help="List calendar names, one index per Apple Event")
+    sp.add_argument("--ids", action="store_true", help="accepted; ids are indexes")
+    sp.add_argument("--full", action="store_true", help="accepted; still names and indexes only")
     add_json(sp)
 
-    sp = sub.add_parser("list", help="Events overlapping a date range (titles and times)")
+    sp = sub.add_parser("name-at", help="Name of one calendar index")
+    sp.add_argument("--index", type=int, required=True)
+    add_json(sp)
+
+    sp = sub.add_parser("list", help="Events overlapping a date range (index by default)")
     add_range(sp, 7)
+    sp.add_argument("--live", action="store_true", help="query Calendar.app instead of the local index")
+    sp.add_argument("--light", action="store_true", help="titles and times only; do not read locations")
+    sp.add_argument("--all", action="store_true", help="accepted for compatibility; live list already includes every calendar")
     add_json(sp)
 
-    sp = sub.add_parser("search", help="Find events by title or location inside a window")
+    sp = sub.add_parser("search", help="Find events by title (index by default)")
     sp.add_argument("query")
     add_range(sp, 180)
+    sp.add_argument("--live", action="store_true", help="query Calendar.app instead of the local index")
+    sp.add_argument("--all", action="store_true", help="accepted for compatibility; live list already includes every calendar")
     add_json(sp)
 
     sp = sub.add_parser("show", help="One event by --uid, or one exact title match")
@@ -323,6 +385,24 @@ def build_parser():
     return p
 
 
+def live_indexes(index, name, as_json):
+    if index is not None:
+        return [index]
+    if not name:
+        die(2, "needs_calendar", "Pass --index or --calendar. A live list does not walk every calendar in one Apple Event.", as_json)
+    counted = calendar_count()
+    if not counted.get("ok"):
+        die(4 if counted.get("code") == 4 else 1, counted.get("error") or "calendar_error", counted.get("message") or "", as_json)
+    found = []
+    for i in range(counted["calendars"]):
+        row = call_jxa_result({"op": "calendarAt", "index": i}, NAME_TIMEOUT)
+        if row.get("ok") and (row.get("name") or "") == name:
+            found.append(i)
+    if not found:
+        die(2, "not_found", f"No calendar named {name!r}.", as_json)
+    return found
+
+
 def main(argv=None):
     args = build_parser().parse_args(argv)
     as_json = getattr(args, "json", False)
@@ -336,23 +416,78 @@ def main(argv=None):
         data["version"] = VERSION
         emit(data, as_json, print_doctor)
         return
+    if args.cmd == "name-at":
+        data = call_jxa({"op": "calendarAt", "index": args.index}, NAME_TIMEOUT, as_json)
+        emit(data, as_json, lambda d: print(f"{d.get('index')}  {d.get('name')}"))
+        return
     if args.cmd == "calendars":
-        data = call_jxa({"op": "calendars"}, DEFAULT_TIMEOUT, as_json)
+        counted = calendar_count()
+        if not counted.get("ok"):
+            die(4 if counted.get("code") == 4 else 1, counted.get("error") or "calendar_error", counted.get("message") or "", as_json)
+        rows = []
+        skipped = []
+        for i in range(counted["calendars"]):
+            row = call_jxa_result({"op": "calendarAt", "index": i}, NAME_TIMEOUT)
+            if row.get("ok"):
+                rows.append({"index": i, "id": i, "name": row.get("name") or "(unnamed)", "writable": None})
+            else:
+                skipped.append(i)
+        data = {"ok": True, "count": len(rows), "calendars": rows, "skippedIndexes": skipped, "tool": "grok-calendar", "version": VERSION}
         emit(data, as_json, print_calendars)
         return
     if args.cmd == "list":
         start, end = resolve_range(args, 7, search=False)
-        data = call_jxa({
-            "op": "list",
+        if not args.live:
+            data = calcache.list_events(start, end, args.calendar, None, args.limit)
+            if data.get("ok"):
+                emit(data, as_json, print_events)
+                return
+            # fall through to live when index missing
+        indexes = live_indexes(getattr(args, "index", None), getattr(args, "calendar", None), as_json)
+        events = []
+        skipped = []
+        truncated = False
+        for index in indexes:
+            piece = call_jxa_result({
+                "op": "list",
+                "from": start,
+                "to": end,
+                "calendarIndex": index,
+                "limit": args.limit,
+                "light": True,
+            }, LONG_TIMEOUT)
+            if not piece.get("ok"):
+                if piece.get("error") in ("automation_denied", "calendar_tcc"):
+                    die(3, piece["error"], piece.get("message") or "", as_json)
+                if len(indexes) == 1:
+                    code = 4 if piece.get("error") in ("timeout", "automation_timeout") else 1
+                    die(code, piece.get("error") or "calendar_error", piece.get("message") or "calendar list failed", as_json)
+                skipped.append({"index": index, "error": piece.get("error")})
+                continue
+            events.extend(piece.get("events") or [])
+            truncated = truncated or bool(piece.get("truncated"))
+        events.sort(key=lambda row: str(row.get("start") or ""))
+        data = {
+            "ok": True,
             "from": start,
             "to": end,
-            "calendar": args.calendar,
-            "limit": args.limit,
-        }, LONG_TIMEOUT, as_json)
+            "count": len(events),
+            "truncated": truncated,
+            "skipped": skipped,
+            "events": events[: args.limit] if args.limit else events,
+            "source": "live",
+            "tool": "grok-calendar",
+            "version": VERSION,
+        }
         emit(data, as_json, print_events)
         return
     if args.cmd == "search":
         start, end = resolve_range(args, 180, search=True)
+        if not args.live:
+            data = calcache.list_events(start, end, args.calendar, args.query, args.limit)
+            if data.get("ok"):
+                emit(data, as_json, print_events)
+                return
         data = call_jxa({
             "op": "search",
             "query": args.query,
@@ -360,7 +495,9 @@ def main(argv=None):
             "to": end,
             "calendar": args.calendar,
             "limit": args.limit,
+            "writableOnly": not args.all,
         }, LONG_TIMEOUT, as_json)
+        data["source"] = "live"
         emit(data, as_json, print_events)
         return
     if args.cmd == "show":

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""grok-desk 0.1.1 — onboard a Mac and build local search indexes.
+"""grok-desk 0.1.2 — onboard a Mac and build local search indexes.
 
 Caches stay under ~/.cache (0700 dirs, 0600 databases). Nothing is uploaded.
 No Keychain. No Passwords. Mail is not called. Calendar and Reminders are
@@ -37,8 +37,8 @@ GAPS = [
     "Notes uses the existing grok-notes cache (~/.cache/grok-notes/index.sqlite). There is no second notes database.",
     "Messages stores chat guid, display name, group flag, service, last date, and message count, plus an FTS index of message text when Full Disk Access allows the read. Send rules are unchanged: grok-messages --to is 1:1 only; groups need --chat-guid.",
     "The contacts cache (id, name, org, phones, emails) is off unless onboard --index-contacts or reindex --only contacts. It is not built by a normal onboard.",
-    "Calendar reindex calls grok-calendar doctor once. When that is authorized it stores calendar names and events from today through 90 days (uid, title, start, end, all-day, calendar name). Locations and notes are not stored. Timeout or denied Automation sets pending_allow and is not retried.",
-    "Reminders reindex calls grok-reminders doctor once. When that is authorized it stores list names and incomplete reminders due today through 60 days (id, list, title, due). Notes are not stored. Timeout or denied Automation sets pending_allow and is not retried. Mail is not indexed. Focus and Safari are probed by doctor and are not part of this index.",
+    "Calendar reindex runs grok-calendar doctor once. When that is authorized it stores every calendar and events from today through 90 days, one calendar id at a time (uid, title, start, end, all-day, calendar name). No calendar is skipped by name. A calendar that times out is skipped for that run and not retried. Doctor timeout or denied Automation sets pending_allow and is not retried. Locations and notes are not stored.",
+    "Reminders reindex runs a names-only doctor, lean lists, then one incomplete-only collect (id, list, title, due). Notes are not stored. Timeout or denied Automation sets pending_allow and is not retried. Mail is not indexed. Focus and Safari are probed by doctor and are not part of this index.",
     "Keychain, Passwords, and HomeKit are out on purpose.",
 ]
 
@@ -299,6 +299,79 @@ def do_onboard(full: bool, index_contacts: bool) -> dict:
     }
 
 
+def do_search(surface: str, query: str, limit: int) -> dict:
+    """Query a local index when present. No Apple Events."""
+    import sqlite3
+    q = (query or "").strip()
+    if len(q) < 2:
+        return {"ok": False, "error": "missing_query", "message": "Search needs at least 2 characters."}
+    path = common.db_path(f"grok-{surface}")
+    if not path.exists():
+        return {"ok": False, "error": "no_index", "message": f"No {surface} index. Run: grok-desk reindex --only {surface}"}
+    con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        meta = _meta(con)
+        if meta.get("status") == "pending_allow":
+            return {"ok": False, "error": "pending_allow", "message": f"{surface} index is pending_allow. Fix Automation, then reindex."}
+        needle = f"%{q}%"
+        rows = []
+        if surface == "calendar":
+            for uid, cal, title, start_at, end_at, all_day in con.execute(
+                "SELECT uid, calendar, title, start_at, end_at, all_day FROM events "
+                "WHERE title LIKE ? COLLATE NOCASE ORDER BY start_at LIMIT ?",
+                (needle, limit),
+            ):
+                rows.append({"uid": uid, "calendar": cal, "title": title, "start": start_at, "end": end_at, "allDay": bool(all_day)})
+        elif surface == "reminders":
+            for ident, lst, title, due, completed in con.execute(
+                "SELECT id, list_name, title, due, completed FROM reminders "
+                "WHERE title LIKE ? COLLATE NOCASE ORDER BY due IS NULL, due LIMIT ?",
+                (needle, limit),
+            ):
+                rows.append({"id": ident, "list": lst, "title": title, "due": due or None, "completed": bool(completed)})
+        elif surface == "contacts":
+            for ident, name, org in con.execute(
+                "SELECT id, name, org FROM contacts WHERE name LIKE ? COLLATE NOCASE OR org LIKE ? COLLATE NOCASE LIMIT ?",
+                (needle, needle, limit),
+            ):
+                rows.append({"id": ident, "name": name, "org": org})
+        elif surface == "notes":
+            # notes schema varies; try title match
+            try:
+                for row in con.execute(
+                    "SELECT id, title, folder FROM notes WHERE title LIKE ? COLLATE NOCASE LIMIT ?",
+                    (needle, limit),
+                ):
+                    rows.append({"id": row[0], "title": row[1], "folder": row[2]})
+            except sqlite3.OperationalError as exc:
+                return {"ok": False, "error": "schema", "message": str(exc)[:200]}
+        elif surface == "messages":
+            try:
+                for row in con.execute(
+                    "SELECT chat_guid, display_name, last_date FROM chats WHERE display_name LIKE ? COLLATE NOCASE LIMIT ?",
+                    (needle, limit),
+                ):
+                    rows.append({"chatGuid": row[0], "name": row[1], "lastDate": row[2]})
+            except sqlite3.OperationalError as exc:
+                return {"ok": False, "error": "schema", "message": str(exc)[:200]}
+        else:
+            return {"ok": False, "error": "unknown_surface", "message": surface}
+        return {
+            "ok": True,
+            "tool": common.TOOL,
+            "version": VERSION,
+            "surface": surface,
+            "source": "cache",
+            "query": q,
+            "count": len(rows),
+            "hits": rows,
+            "path": str(path),
+            "indexedAt": meta.get("indexed_at"),
+        }
+    finally:
+        con.close()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="grok-desk", description="Local Apple Desk onboarding and indexes.")
     parser.add_argument("--version", action="version", version=f"grok-desk {VERSION}")
@@ -326,6 +399,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     gaps = sub.add_parser("gaps", help="What this tool will not do")
     add_json(gaps)
+
+    search = sub.add_parser("search", help="Search a local index (no Apple Events)")
+    search.add_argument("surface", choices=SURFACES)
+    search.add_argument("query")
+    search.add_argument("--limit", type=int, default=20)
+    add_json(search)
     return parser
 
 
@@ -357,6 +436,10 @@ def main(argv=None) -> int:
         data = do_onboard(args.full, args.index_contacts)
         emit(data, as_json)
         return 0 if data["ok"] else 1
+    if args.cmd == "search":
+        data = do_search(args.surface, args.query, args.limit)
+        emit(data, as_json)
+        return 0 if data.get("ok") else 1
     parser.print_help()
     return 2
 
