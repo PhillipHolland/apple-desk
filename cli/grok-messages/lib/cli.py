@@ -10,7 +10,7 @@ from pathlib import Path
 
 import db
 
-VERSION = "0.2.3"
+VERSION = "0.2.4"
 LIB = Path(__file__).resolve().parent / "messages.js"
 ALLOWLIST = Path.home() / ".config" / "grok-messages" / "allowlist"
 MAX_TEXT = 4000
@@ -20,7 +20,7 @@ GAPS = [
     "Send only works for a chat currently in the Messages scripting list. Unknown-sender and junk chats are often absent there, so history can show them while send returns not_in_messages_ui. Nothing is sent in that case.",
     "send --to is a person only (phone, email, or a 1:1 chat). It never targets a group, even when that handle is a member of one. The send uses Messages' participant object (1:1). If the handle exists only in a group, send refuses and names that group's guid. Group sends require --chat-guid, which the user must name on purpose. This CLI does not create groups.",
     "attachments lists metadata for one chat (name, mime, bytes, sticker, date). It does not download, open, or copy the file, and it does not return the absolute path. Send still cannot attach a file. No tapbacks, stickers-as-send, message effects, edits, unsends, or replies. Send is plain text only, capped at 4000 characters.",
-    "No pin, mute, hide alerts, or Focus filter changes. mark-read sets message.is_read only, and only with --force. Messages scripting cannot do that (send, login, logout only), so the write is chat.db. It does not send.",
+    "No pin, mute, hide alerts, or Focus filter changes. mark-read always refuses, including with --force. Messages scripting cannot mark read (send, login, logout only). A chat.db is_read write does not sync the iPhone badge. The sync path is private IMCore, which this CLI will not use.",
     "Search looks at the message text column only. Attachment-only rows and a few attributed-body-only rows have null text and will not match. Snippets are capped.",
     "Reactions are labeled (love, like, dislike, laugh, emphasize, question, emoji) from the row itself. The message that was reacted to is not pulled in.",
     "An optional allowlist file (~/.config/grok-messages/allowlist) restricts send targets if it exists. One handle or chat guid per line. If the file exists and has no targets, every send is refused. If the file does not exist, --force is the only gate.",
@@ -203,7 +203,7 @@ def cmd_doctor(args):
             print(f"allowlist: on ({al['count']} targets)  {al['path']}")
         else:
             print("allowlist: off (send still needs --force)")
-        print("writes: send and mark-read, each only with --force; mark-read sets message.is_read only")
+        print("writes: send only, and only with --force. mark-read always refuses (no chat.db write, no IMCore)")
         print("send --to is 1:1 participant only; a group needs --chat-guid")
 
     emit(data, as_json, text)
@@ -573,17 +573,18 @@ def cmd_unread(args):
 
 
 
-MARK_READ_RISK = (
-    "Risk: Messages.app scripting cannot mark a chat read. Its dictionary only sends, logs in, and logs out, and chat objects have no read flag. "
-    "Private IMCore and SIP changes are not used. "
-    "mark-read therefore updates ~/Library/Messages/chat.db while Messages may have it open. "
-    "The only column written is message.is_read (set to 1 on incoming unread rows). "
-    "It does not vacuum, delete rows, touch other columns, or send. "
-    "A direct write can race with Messages, and the Dock badge can lag until Messages notices."
+
+MARK_READ_REFUSAL = (
+    "Refusing to mark read. Nothing was written and nothing was sent, with or without --force. "
+    "Messages.app scripting cannot mark a chat read: its dictionary only sends, logs in, and logs out, and chat objects have no read flag. "
+    "Setting ~/Library/Messages/chat.db message.is_read only flips a local flag. Messages does not treat that as its own read, so iCloud does not sync it and the iPhone badge stays. "
+    "The path that syncs read state is private IMCore, often with SIP disabled so a helper can be injected into Messages. This CLI does not use IMCore and does not change SIP. "
+    "There is no public or Messages-safe API here that clears the phone badge."
 )
 
 
 def cmd_mark_read(args):
+    """Always refuse. Do not write chat.db. Do not call Messages send. Do not touch IMCore."""
     as_json = args.json
     has_all = bool(args.all)
     to = (args.to or "").strip()
@@ -593,65 +594,20 @@ def cmd_mark_read(args):
     if has_all and (to or chat_guid):
         die(2, "both_targets", "Pass either --all or one chat (--to or --chat-guid), not both. Nothing was marked read.", as_json)
     if not has_all and not to and not chat_guid:
-        die(2, "missing_target", "Pass --all, or --to / --chat-guid for one chat. Nothing was marked read.", as_json)
+        die(2, "missing_target", "Pass --all, or --to / --chat-guid. Nothing was marked read. " + MARK_READ_REFUSAL, as_json)
 
-    chat = None
-    if not has_all:
-        con = open_db(as_json)
-        try:
-            chat = _resolve(con, chat_guid or to, args.service, as_json)
-            scoped = db._unread_count(con, chat["rowid"])
-            total = db._unread_count(con, None)
-        finally:
-            con.close()
+    note = ""
+    try:
+        con = db.connect()
+    except db.HistoryUnavailable:
+        note = " Local unread count was not read."
     else:
-        con = open_db(as_json)
         try:
-            total = db._unread_count(con, None)
-            scoped = total
+            total = db.counts(con)["unreadMessages"]
+            note = f" Local incoming is_read=0 rows: {total}. That count is not the iPhone badge."
         finally:
             con.close()
-
-    if not args.force:
-        die(
-            2,
-            "needs_force",
-            f"Refusing to mark read without --force. {scoped} incoming unread row(s) in scope ({total} unread overall). Nothing was written. {MARK_READ_RISK}",
-            as_json,
-        )
-
-    try:
-        writer = db.connect_write()
-    except db.HistoryUnavailable as exc:
-        die(5, "needs_full_disk_access", exc.message, as_json)
-    try:
-        try:
-            result = db.mark_read(writer, None if chat is None else chat["rowid"])
-        except db.HistoryWriteError as exc:
-            die(1, "messages_error", exc.message, as_json)
-    finally:
-        writer.close()
-
-    data = {
-        "ok": True,
-        "marked": True,
-        "scope": "all" if has_all else "chat",
-        "sent": False,
-        **result,
-    }
-    if chat is not None:
-        data["chat"] = {k: chat[k] for k in ("guid", "name", "identifier", "service", "style")}
-
-    def text(d):
-        if d.get("chat"):
-            label = d["chat"].get("name") or d["chat"].get("identifier") or d["chat"].get("guid")
-            print(f"marked read {d['updated']} message(s) in {label}")
-        else:
-            print(f"marked read {d['updated']} message(s) across all chats")
-        print(f"unread before {d['unreadBefore']}  after {d['unreadAfter']}")
-        print("column: message.is_read only. nothing sent.")
-
-    emit(data, as_json, text)
+    die(2, "unsupported", MARK_READ_REFUSAL + note, as_json)
 
 
 def cmd_gaps(args):
@@ -749,24 +705,23 @@ def build_parser():
 
     mark = sub.add_parser(
         "mark-read",
-        help="Mark incoming messages read. Requires --force. Does not send.",
+        help="Refuses. No public mark-read syncs to the iPhone. --force does not write.",
         description=(
-            "Mark incoming unread messages read by setting message.is_read to 1. "
-            "Nothing is written unless --force is set. This does not send, reply, or react.\n\n"
-            + MARK_READ_RISK
+            "Refuse to mark messages read.\n\n"
+            + MARK_READ_REFUSAL
             + "\n\n"
-            "Safer path rejected: Messages.app AppleScript/JXA. The scripting dictionary has no mark-read "
-            "command and no read property on chat or message (commands are send, login, and logout). "
-            "Opening a chat from the script would not clear is_read, and private IMCore is out of bounds."
+            "--all, --to, and --chat-guid select a scope for the refusal message only. "
+            "--force does not enable a write. This command never updates chat.db, never sends, "
+            "and never loads private IMCore."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     add_json(mark)
-    mark.add_argument("--all", action="store_true", help="Every incoming unread row on this Mac. Not a single chat.")
-    mark.add_argument("--to", help="One chat: phone, email, display name, or guid.")
-    mark.add_argument("--chat-guid", help="One chat by guid.")
-    mark.add_argument("--service", choices=("iMessage", "SMS", "RCS"), help="Limit --to when several chats match.")
-    mark.add_argument("--force", action="store_true", help="Actually write is_read. Without this, nothing is written.")
+    mark.add_argument("--all", action="store_true", help="Scope note only. Does not write.")
+    mark.add_argument("--to", help="Scope note only. Does not write.")
+    mark.add_argument("--chat-guid", help="Scope note only. Does not write.")
+    mark.add_argument("--service", choices=("iMessage", "SMS", "RCS"))
+    mark.add_argument("--force", action="store_true", help="Accepted and ignored. Still refuses. Does not write chat.db.")
     mark.set_defaults(func=cmd_mark_read)
 
     gaps = sub.add_parser("gaps")

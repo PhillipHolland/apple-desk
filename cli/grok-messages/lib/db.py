@@ -1,4 +1,4 @@
-"""chat.db access. Reads are mode=ro. The only write is mark_read, which sets message.is_read and nothing else. Never sends."""
+"""Read-only chat.db access. Never writes the database. Never sends. Never marks read."""
 from __future__ import annotations
 
 import json
@@ -209,93 +209,6 @@ def unread_chats(con, limit: int) -> dict:
         "top": chats,
     }
 
-
-class HistoryWriteError(Exception):
-    def __init__(self, message: str):
-        super().__init__(message)
-        self.message = message
-
-
-def connect_write():
-    """Writable connection for mark_read only. Does not change journal mode."""
-    path = DB_PATH
-    if not path.exists():
-        raise HistoryUnavailable(
-            f"No {path}. Messages history is not on this Mac."
-        )
-    try:
-        con = sqlite3.connect(str(path), timeout=30, isolation_level=None)
-        con.execute("PRAGMA busy_timeout = 30000")
-        con.execute("select 1 from message limit 1").fetchone()
-    except sqlite3.Error as exc:
-        raise HistoryUnavailable(_fda_message(exc)) from exc
-    con.row_factory = sqlite3.Row
-    return con
-
-
-def _unread_count(con, chat_rowid: int | None = None) -> int:
-    if chat_rowid is None:
-        row = con.execute(
-            "select count(*) from message where is_from_me = 0 and is_read = 0"
-        ).fetchone()
-        return int(row[0])
-    row = con.execute(
-        """
-        select count(*)
-        from message m
-        join chat_message_join cm on cm.message_id = m.ROWID
-        where m.is_from_me = 0 and m.is_read = 0 and cm.chat_id = ?
-        """,
-        (chat_rowid,),
-    ).fetchone()
-    return int(row[0])
-
-
-def mark_read(con, chat_rowid: int | None) -> dict:
-    """Set message.is_read = 1 for unread incoming rows. No other column. No delete. No vacuum.
-
-    chat_rowid None means every unread incoming row (the --all scope).
-    A chat id limits the update to messages joined to that chat.
-    """
-    before = _unread_count(con, None)
-    scoped = before if chat_rowid is None else _unread_count(con, chat_rowid)
-    if chat_rowid is None:
-        sql = "update message set is_read = 1 where is_from_me = 0 and is_read = 0"
-        params: tuple = ()
-    else:
-        sql = """
-        update message set is_read = 1
-        where is_from_me = 0 and is_read = 0
-          and ROWID in (
-            select m.ROWID
-            from message m
-            join chat_message_join cm on cm.message_id = m.ROWID
-            where cm.chat_id = ?
-          )
-        """
-        params = (chat_rowid,)
-    try:
-        con.execute("BEGIN IMMEDIATE")
-        cur = con.execute(sql, params)
-        updated = int(cur.rowcount if cur.rowcount is not None else scoped)
-        con.execute("COMMIT")
-    except sqlite3.Error as exc:
-        try:
-            con.execute("ROLLBACK")
-        except sqlite3.Error:
-            pass
-        raise HistoryWriteError(
-            "chat.db did not accept the is_read update. Nothing else was changed. "
-            f"{exc}. Messages may have the database locked. Do not retry in a loop."
-        ) from exc
-    after = _unread_count(con, None)
-    return {
-        "unreadBefore": before,
-        "scopedUnread": scoped,
-        "updated": updated,
-        "unreadAfter": after,
-        "column": "message.is_read",
-    }
 
 
 def _handles(blob):
