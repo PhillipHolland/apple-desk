@@ -8,13 +8,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-VERSION = "0.1.0"
+VERSION = "0.1.1"
 TOOL = "grok-desk"
 CHICAGO = ZoneInfo("America/Chicago")
 APPLE = datetime(2001, 1, 1, tzinfo=timezone.utc)
 
-# Calendar, Reminders, and Mail have timed out on Automation Allow.
-# Never call them from onboard/reindex. Version check only.
+# Mail stays version-only: this Mac forwards into Gmail, and Mail doctor can hang.
+# Calendar and Reminders are not probed by the 5s onboard doctor loop.
+# reindex calls each once with the CLI's own timeout. Timeout or deny -> pending_allow, no retry.
 VERSION_ONLY = ("grok-calendar", "grok-reminders", "grok-mail")
 
 TOOLS = (

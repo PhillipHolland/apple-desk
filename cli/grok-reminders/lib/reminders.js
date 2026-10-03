@@ -177,13 +177,11 @@ function run(argv) {
   }
 
   if (op === "doctor") {
+    // Lightweight: do not walk every reminder (that times out on large libraries).
     var all = lists();
-    var open = 0;
-    var total = 0;
+    var names = [];
     for (var i = 0; i < all.length; i++) {
-      var rows = bulk(all[i], false);
-      total += rows.length;
-      for (var j = 0; j < rows.length; j++) if (!rows[j].completed) open++;
+      try { names.push(String(all[i].name())); } catch (e) { names.push("(unnamed)"); }
     }
     var defName = null;
     var def = defaultList();
@@ -192,30 +190,37 @@ function run(argv) {
     }
     return JSON.stringify({
       ok: true,
+      automation: "authorized",
+      backend: "reminders-app-jxa",
       name: Reminders.name(),
       version: Reminders.version(),
       lists: all.length,
-      reminders: total,
-      incomplete: open,
-      defaultList: defName
+      listNames: names,
+      defaultList: defName,
+      note: "Doctor does not count reminders; use lists/today for counts."
     });
   }
 
   if (op === "lists") {
     var allLists = lists();
+    var withCounts = !!payload.counts;
     var outLists = [];
     for (var li = 0; li < allLists.length; li++) {
-      var rows = bulk(allLists[li], false);
-      var inc = 0;
-      for (var rj = 0; rj < rows.length; rj++) if (!rows[rj].completed) inc++;
-      outLists.push({
-        name: rows.length ? rows[0].list : (function () { try { return String(allLists[li].name()); } catch (e) { return ""; } })(),
-        id: rows.length ? rows[0].listId : (function () { try { return String(allLists[li].id()); } catch (e) { return ""; } })(),
-        reminders: rows.length,
-        incomplete: inc
-      });
+      var lname = "";
+      var lid = "";
+      try { lname = String(allLists[li].name()); } catch (e) { lname = ""; }
+      try { lid = String(allLists[li].id()); } catch (e) { lid = ""; }
+      var entry = { name: lname, id: lid };
+      if (withCounts) {
+        var rows = bulk(allLists[li], false);
+        var inc = 0;
+        for (var rj = 0; rj < rows.length; rj++) if (!rows[rj].completed) inc++;
+        entry.reminders = rows.length;
+        entry.incomplete = inc;
+      }
+      outLists.push(entry);
     }
-    return JSON.stringify({ok: true, count: outLists.length, lists: outLists});
+    return JSON.stringify({ok: true, count: outLists.length, lists: outLists, counts: withCounts});
   }
 
   if (op === "collect") {

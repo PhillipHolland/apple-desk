@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""grok-desk 0.1.0 — onboard a Mac and build local search indexes.
+"""grok-desk 0.1.1 — onboard a Mac and build local search indexes.
 
 Caches stay under ~/.cache (0700 dirs, 0600 databases). Nothing is uploaded.
-No Keychain. No Passwords. Calendar, Reminders, and Mail are not called.
+No Keychain. No Passwords. Mail is not called. Calendar and Reminders are
+called only by reindex, once each, and only through their CLIs.
 """
 from __future__ import annotations
 
@@ -15,7 +16,8 @@ from pathlib import Path
 import common
 import contacts_index
 import messages_index
-import stubs
+import calendar_index
+import reminders_index
 
 VERSION = common.VERSION
 SAFE_DOCTORS = (
@@ -35,8 +37,8 @@ GAPS = [
     "Notes uses the existing grok-notes cache (~/.cache/grok-notes/index.sqlite). There is no second notes database.",
     "Messages stores chat guid, display name, group flag, service, last date, and message count, plus an FTS index of message text when Full Disk Access allows the read. Send rules are unchanged: grok-messages --to is 1:1 only; groups need --chat-guid.",
     "The contacts cache (id, name, org, phones, emails) is off unless onboard --index-contacts or reindex --only contacts. It is not built by a normal onboard.",
-    "Calendar and Reminders caches are empty schemas with status pending_allow. This version does not call those apps, so it cannot hang on an Automation dialog. Filling them waits until Allow is already granted.",
-    "Mail is not indexed. Focus and Safari CLIs are probed by doctor and are not part of this build.",
+    "Calendar reindex calls grok-calendar doctor once. When that is authorized it stores calendar names and events from today through 90 days (uid, title, start, end, all-day, calendar name). Locations and notes are not stored. Timeout or denied Automation sets pending_allow and is not retried.",
+    "Reminders reindex calls grok-reminders doctor once. When that is authorized it stores list names and incomplete reminders due today through 60 days (id, list, title, due). Notes are not stored. Timeout or denied Automation sets pending_allow and is not retried. Mail is not indexed. Focus and Safari are probed by doctor and are not part of this index.",
     "Keychain, Passwords, and HomeKit are out on purpose.",
 ]
 
@@ -168,6 +170,10 @@ def status_rows() -> list[dict]:
             if name == "notes":
                 row["folders"] = _count(con, "folders")
                 row["mode"] = meta.get("mode")
+            if name == "calendar":
+                row["calendars"] = _count(con, "calendars")
+            if name == "reminders":
+                row["lists"] = _count(con, "lists")
             if name == "contacts" and meta.get("opt_in") != "1":
                 row["status"] = meta.get("status") or "present"
         finally:
@@ -223,9 +229,9 @@ def reindex_surface(name: str, full: bool, index_contacts: bool) -> dict:
             }
         return contacts_index.build()
     if name == "calendar":
-        return stubs.calendar()
+        return calendar_index.build()
     if name == "reminders":
-        return stubs.reminders()
+        return reminders_index.build()
     return {"ok": False, "surface": name, "error": "unknown_surface"}
 
 

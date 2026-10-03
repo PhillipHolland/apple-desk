@@ -9,7 +9,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "0.1.2"
+VERSION = "0.1.3"
 LIB = Path(__file__).resolve().parent / "reminders.js"
 
 GAPS = [
