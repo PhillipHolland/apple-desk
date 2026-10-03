@@ -1,5 +1,7 @@
 #!/bin/bash
-# grok-reminders — Apple Reminders CLI (Reminders.app JXA). Not RemCTL.
+# grok-reminders — Apple Calendar CLI.
+# Shells out to apple-pim reminder-cli when that binary is on PATH.
+# Does not vendor apple-pim. Not a second EventKit backend.
 set -u
 SOURCE="${BASH_SOURCE[0]}"
 while [ -L "$SOURCE" ]; do
@@ -8,4 +10,10 @@ while [ -L "$SOURCE" ]; do
   [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
 done
 ROOT=$(cd -P "$(dirname "$SOURCE")/.." && pwd)
+# 86 means this command is not the apple-pim wrap. Fall through to the in-house CLI.
+python3 "$ROOT/lib/pim_wrap.py" "$@"
+code=$?
+if [[ "$code" -ne 86 ]]; then
+  exit "$code"
+fi
 exec python3 "$ROOT/lib/cli.py" "$@"
