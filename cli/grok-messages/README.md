@@ -4,6 +4,9 @@ Local Apple Messages CLI for this Mac. Sending goes through Messages.app (`osasc
 
 ```bash
 grok-messages doctor
+grok-messages unread --limit 20
+grok-messages mark-read --all
+grok-messages mark-read --all --force
 grok-messages chats --limit 30
 grok-messages chats --query "Ada"
 grok-messages recent --to "+15551212" --limit 15
@@ -15,7 +18,9 @@ grok-messages send --to "+15551212" --text "hello" --force
 grok-messages send --chat-guid "iMessage;+;chat..." --text "hello" --dry-run
 ```
 
-Add `--json` on any command except `gaps`. `chats` lists handles and counts, not message text. `recent` and `search` return message text for the chat or query you named. `search` snippets are short. Deletes do not exist.
+Add `--json` on any command except `gaps`. `unread` counts incoming rows with `is_read = 0`. It does not return message text, does not mark anything read, and does not call Messages.app. A chat title is the display name, or a name from `~/.cache/grok-contacts` when that index exists. `chats` lists handles and counts, not message text. `recent` and `search` return message text for the chat or query you named. `search` snippets are short. Deletes do not exist.
+
+`mark-read` sets `message.is_read` to 1 for incoming unread rows and does nothing else. It refuses without `--force` and does not send. `--all` covers every unread incoming row. `--to` or `--chat-guid` limits it to one chat. Messages.app scripting cannot mark a chat read (send, login, and logout only; no read flag), so this writes `~/Library/Messages/chat.db` while Messages may have it open. That can race with Messages, and the Dock badge can lag. It does not vacuum, delete rows, or change any other column. Private IMCore is not used.
 
 `send` does nothing unless `--force` is present. `--dry-run` resolves the target and does not send, even together with `--force`.
 

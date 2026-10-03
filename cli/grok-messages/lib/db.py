@@ -1,15 +1,13 @@
-"""Read-only chat.db access. Never writes the database. Never sends."""
+"""chat.db access. Reads are mode=ro. The only write is mark_read, which sets message.is_read and nothing else. Never sends."""
 from __future__ import annotations
 
-import os
+import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from zoneinfo import ZoneInfo
-
 APPLE = datetime(2001, 1, 1, tzinfo=timezone.utc)
-CHICAGO = ZoneInfo("America/Chicago")
 DB_PATH = Path.home() / "Library" / "Messages" / "chat.db"
+CONTACTS_DB = Path.home() / ".cache" / "grok-contacts" / "index.sqlite"
 
 FILTER_NAMES = {0: "primary", 1: "unknown", 2: "other"}
 STYLE_NAMES = {43: "group", 45: "direct"}
@@ -41,7 +39,8 @@ def apple_to_iso(value):
     if raw == 0:
         return None
     seconds = raw / 1e9 if abs(raw) > 10**12 else float(raw)
-    dt = (APPLE + timedelta(seconds=seconds)).astimezone(CHICAGO)
+    # This Mac's local zone. Do not hardcode a city.
+    dt = (APPLE + timedelta(seconds=seconds)).astimezone()
     return dt.isoformat(timespec="seconds")
 
 
@@ -79,7 +78,224 @@ def counts(con) -> dict:
     chats = con.execute("select count(*) from chat").fetchone()[0]
     messages = con.execute("select count(*) from message").fetchone()[0]
     primary = con.execute("select count(*) from chat where is_filtered = 0").fetchone()[0]
-    return {"chats": chats, "messages": messages, "primaryChats": primary}
+    unread_n = con.execute(
+        "select count(*) from message where is_from_me = 0 and is_read = 0"
+    ).fetchone()[0]
+    return {"chats": chats, "messages": messages, "primaryChats": primary, "unreadMessages": unread_n}
+
+
+def _contact_names() -> dict:
+    """Map a normalized phone or email to a display name. Cache only. No Contacts.app."""
+    path = CONTACTS_DB
+    if not path.exists():
+        return {}
+    try:
+        con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return {}
+    try:
+        try:
+            meta = {row[0]: row[1] for row in con.execute("select key, value from meta")}
+        except sqlite3.Error:
+            return {}
+        if meta.get("status") in {"error", "pending_allow", "off", "unreadable", "failed", "skipped"}:
+            return {}
+        legacy_ok = meta.get("status") is None and meta.get("indexed_at") and meta.get("opt_in") == "1"
+        if meta.get("status") != "ok" and not legacy_ok:
+            return {}
+        out = {}
+        for name, phones, emails in con.execute("select name, phones, emails from contacts"):
+            if not name:
+                continue
+            try:
+                phone_list = json.loads(phones or "[]")
+            except json.JSONDecodeError:
+                phone_list = []
+            try:
+                email_list = json.loads(emails or "[]")
+            except json.JSONDecodeError:
+                email_list = []
+            if not isinstance(phone_list, list):
+                phone_list = []
+            if not isinstance(email_list, list):
+                email_list = []
+            for item in list(phone_list) + list(email_list):
+                key = norm_handle(str(item))
+                if key and key not in out:
+                    out[key] = str(name)
+        return out
+    finally:
+        con.close()
+
+
+def unread_chats(con, limit: int) -> dict:
+    """Incoming rows Messages marked unread. Does not mark anything read. No message text."""
+    total_messages = con.execute(
+        "select count(*) from message where is_from_me = 0 and is_read = 0"
+    ).fetchone()[0]
+    total_chats = con.execute(
+        """
+        select count(*) from (
+          select c.ROWID
+          from message m
+          join chat_message_join cm on cm.message_id = m.ROWID
+          join chat c on c.ROWID = cm.chat_id
+          where m.is_from_me = 0 and m.is_read = 0
+          group by c.ROWID
+        )
+        """
+    ).fetchone()[0]
+    rows = con.execute(
+        """
+        select
+          c.guid as guid,
+          c.chat_identifier as chat_identifier,
+          c.display_name as display_name,
+          c.service_name as service_name,
+          c.style as style,
+          c.is_filtered as is_filtered,
+          count(*) as unread_count,
+          max(m.date) as last_date,
+          (select group_concat(h.id, char(10))
+             from chat_handle_join j
+             join handle h on h.ROWID = j.handle_id
+             where j.chat_id = c.ROWID) as handles
+        from message m
+        join chat_message_join cm on cm.message_id = m.ROWID
+        join chat c on c.ROWID = cm.chat_id
+        where m.is_from_me = 0 and m.is_read = 0
+        group by c.ROWID
+        order by unread_count desc, last_date desc
+        limit ?
+        """,
+        (limit,),
+    )
+    names = _contact_names()
+    chats = []
+    named = 0
+    for row in rows:
+        handles = _handles(row["handles"])
+        display = (row["display_name"] or "").strip() or None
+        name = display
+        source = "chat" if display else None
+        if not name:
+            for handle in handles or [row["chat_identifier"] or ""]:
+                hit = names.get(norm_handle(handle))
+                if hit:
+                    name = hit
+                    source = "contacts"
+                    break
+        if name and source == "contacts":
+            named += 1
+        style = row["style"]
+        chats.append({
+            "guid": row["guid"],
+            "name": name,
+            "nameSource": source,
+            "identifier": row["chat_identifier"],
+            "service": row["service_name"],
+            "style": STYLE_NAMES.get(style, f"style-{style}"),
+            "filter": FILTER_NAMES.get(row["is_filtered"], f"filter-{row['is_filtered']}"),
+            "unread": int(row["unread_count"]),
+            "lastUnreadAt": apple_to_iso(row["last_date"]),
+        })
+    return {
+        "messages": int(total_messages),
+        "chats": int(total_chats),
+        "returned": len(chats),
+        "namedFromContacts": named,
+        "contactsCache": bool(names),
+        "definition": "incoming message.is_read = 0 (Messages flag; not a live badge sync)",
+        "top": chats,
+    }
+
+
+class HistoryWriteError(Exception):
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.message = message
+
+
+def connect_write():
+    """Writable connection for mark_read only. Does not change journal mode."""
+    path = DB_PATH
+    if not path.exists():
+        raise HistoryUnavailable(
+            f"No {path}. Messages history is not on this Mac."
+        )
+    try:
+        con = sqlite3.connect(str(path), timeout=30, isolation_level=None)
+        con.execute("PRAGMA busy_timeout = 30000")
+        con.execute("select 1 from message limit 1").fetchone()
+    except sqlite3.Error as exc:
+        raise HistoryUnavailable(_fda_message(exc)) from exc
+    con.row_factory = sqlite3.Row
+    return con
+
+
+def _unread_count(con, chat_rowid: int | None = None) -> int:
+    if chat_rowid is None:
+        row = con.execute(
+            "select count(*) from message where is_from_me = 0 and is_read = 0"
+        ).fetchone()
+        return int(row[0])
+    row = con.execute(
+        """
+        select count(*)
+        from message m
+        join chat_message_join cm on cm.message_id = m.ROWID
+        where m.is_from_me = 0 and m.is_read = 0 and cm.chat_id = ?
+        """,
+        (chat_rowid,),
+    ).fetchone()
+    return int(row[0])
+
+
+def mark_read(con, chat_rowid: int | None) -> dict:
+    """Set message.is_read = 1 for unread incoming rows. No other column. No delete. No vacuum.
+
+    chat_rowid None means every unread incoming row (the --all scope).
+    A chat id limits the update to messages joined to that chat.
+    """
+    before = _unread_count(con, None)
+    scoped = before if chat_rowid is None else _unread_count(con, chat_rowid)
+    if chat_rowid is None:
+        sql = "update message set is_read = 1 where is_from_me = 0 and is_read = 0"
+        params: tuple = ()
+    else:
+        sql = """
+        update message set is_read = 1
+        where is_from_me = 0 and is_read = 0
+          and ROWID in (
+            select m.ROWID
+            from message m
+            join chat_message_join cm on cm.message_id = m.ROWID
+            where cm.chat_id = ?
+          )
+        """
+        params = (chat_rowid,)
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        cur = con.execute(sql, params)
+        updated = int(cur.rowcount if cur.rowcount is not None else scoped)
+        con.execute("COMMIT")
+    except sqlite3.Error as exc:
+        try:
+            con.execute("ROLLBACK")
+        except sqlite3.Error:
+            pass
+        raise HistoryWriteError(
+            "chat.db did not accept the is_read update. Nothing else was changed. "
+            f"{exc}. Messages may have the database locked. Do not retry in a loop."
+        ) from exc
+    after = _unread_count(con, None)
+    return {
+        "unreadBefore": before,
+        "scopedUnread": scoped,
+        "updated": updated,
+        "unreadAfter": after,
+        "column": "message.is_read",
+    }
 
 
 def _handles(blob):

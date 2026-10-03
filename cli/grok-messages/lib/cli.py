@@ -10,7 +10,7 @@ from pathlib import Path
 
 import db
 
-VERSION = "0.2.1"
+VERSION = "0.2.3"
 LIB = Path(__file__).resolve().parent / "messages.js"
 ALLOWLIST = Path.home() / ".config" / "grok-messages" / "allowlist"
 MAX_TEXT = 4000
@@ -20,11 +20,12 @@ GAPS = [
     "Send only works for a chat currently in the Messages scripting list. Unknown-sender and junk chats are often absent there, so history can show them while send returns not_in_messages_ui. Nothing is sent in that case.",
     "send --to is a person only (phone, email, or a 1:1 chat). It never targets a group, even when that handle is a member of one. The send uses Messages' participant object (1:1). If the handle exists only in a group, send refuses and names that group's guid. Group sends require --chat-guid, which the user must name on purpose. This CLI does not create groups.",
     "attachments lists metadata for one chat (name, mime, bytes, sticker, date). It does not download, open, or copy the file, and it does not return the absolute path. Send still cannot attach a file. No tapbacks, stickers-as-send, message effects, edits, unsends, or replies. Send is plain text only, capped at 4000 characters.",
-    "No pin, mute, hide alerts, mark read, or Focus filter changes.",
+    "No pin, mute, hide alerts, or Focus filter changes. mark-read sets message.is_read only, and only with --force. Messages scripting cannot do that (send, login, logout only), so the write is chat.db. It does not send.",
     "Search looks at the message text column only. Attachment-only rows and a few attributed-body-only rows have null text and will not match. Snippets are capped.",
     "Reactions are labeled (love, like, dislike, laugh, emphasize, question, emoji) from the row itself. The message that was reacted to is not pulled in.",
     "An optional allowlist file (~/.config/grok-messages/allowlist) restricts send targets if it exists. One handle or chat guid per line. If the file exists and has no targets, every send is refused. If the file does not exist, --force is the only gate.",
     "There is no cloud iMessage API here. This does not talk to iCloud.com.",
+    "unread counts incoming rows with is_read = 0. It does not mark chats read, does not return message text, and does not call Messages.app. Names come from the chat display name, then the local contacts cache when that index exists. Marking read is the separate mark-read command.",
 ]
 
 
@@ -42,10 +43,12 @@ def die(code, error, message, as_json):
         print(f"grok-messages: {error}", file=sys.stderr)
         if message:
             print(message, file=sys.stderr)
-        if error in ("automation_denied", "automation_timeout"):
-            print("If a dialog is on screen: “Grok Bot” wants access to control “Messages”. Click Allow.", file=sys.stderr)
-            print("If it is gone: System Settings → Privacy & Security → Automation → Grok Bot (or Grok Bot Helper, or Terminal) → Messages on.", file=sys.stderr)
-            print("Do not click the dialog more than once. Say done and rerun doctor only.", file=sys.stderr)
+        if error == "automation_denied":
+            print("Messages automation was denied. System Settings → Privacy & Security → Automation → Grok Bot (or Grok Bot Helper, or Terminal) → Messages on.", file=sys.stderr)
+            print("If a dialog is still on screen, click it once. Do not retry in a loop.", file=sys.stderr)
+        if error == "automation_timeout":
+            print("Timed out. That is a hang or a dialog still on screen, not proof that access was denied.", file=sys.stderr)
+            print("If a dialog is up, answer it once. If none is up, Messages may be busy. Do not retry in a loop.", file=sys.stderr)
         if error == "needs_full_disk_access":
             print("System Settings → Privacy & Security → Full Disk Access → Grok Bot and Grok Bot Helper on.", file=sys.stderr)
             print("Quit and reopen Grok Bot after changing that. Send does not need Full Disk Access.", file=sys.stderr)
@@ -59,7 +62,7 @@ def call_jxa(payload, timeout, as_json):
         text=True,
     )
     if proc.returncode in (-14, 142) or "Alarm clock" in (proc.stderr or ""):
-        die(4, "automation_timeout", f"Timed out after {timeout}s waiting for Messages. A permission dialog may be waiting. Do not retry in a loop.", as_json)
+        die(4, "automation_timeout", f"Timed out after {timeout}s waiting for Messages. This is a hang or a dialog, not an access denial. Do not retry in a loop.", as_json)
     if proc.returncode != 0:
         blob = (proc.stderr or proc.stdout or "osascript failed").strip()
         if "-1743" in blob or "Not authorized to send Apple events" in blob:
@@ -188,7 +191,9 @@ def cmd_doctor(args):
         print(f"automation: {d['automation']}")
         hist = d["history"]
         if hist.get("available"):
-            print(f"history: chat.db  chats {hist['chats']}  primary {hist['primaryChats']}  messages {hist['messages']}")
+            unread_n = hist.get("unreadMessages")
+            extra = f"  unread {unread_n}" if unread_n is not None else ""
+            print(f"history: chat.db  chats {hist['chats']}  primary {hist['primaryChats']}  messages {hist['messages']}{extra}")
         else:
             print("history: unavailable (Full Disk Access)")
             if d.get("historyMessage"):
@@ -198,7 +203,7 @@ def cmd_doctor(args):
             print(f"allowlist: on ({al['count']} targets)  {al['path']}")
         else:
             print("allowlist: off (send still needs --force)")
-        print("writes: send only, and only with --force")
+        print("writes: send and mark-read, each only with --force; mark-read sets message.is_read only")
         print("send --to is 1:1 participant only; a group needs --chat-guid")
 
     emit(data, as_json, text)
@@ -544,6 +549,111 @@ def cmd_attachments(args):
     emit(data, as_json, text)
 
 
+def cmd_unread(args):
+    as_json = args.json
+    con = open_db(as_json)
+    try:
+        summary = db.unread_chats(con, args.limit)
+    finally:
+        con.close()
+    data = {"ok": True, "readOnly": True, **summary}
+
+    def text(d):
+        print(f"{d['messages']} unread messages in {d['chats']} chats, showing {d['returned']}")
+        if d.get("contactsCache"):
+            print(f"contacts cache: on  names filled for {d.get('namedFromContacts')} chats in this page")
+        else:
+            print("contacts cache: off (chat names only; no Contacts.app call)")
+        for chat in d["top"]:
+            label = chat.get("name") or chat.get("identifier") or "(no name)"
+            src = chat.get("nameSource") or "-"
+            print(f"{chat['unread']:5}  {chat.get('service') or '-':9}  {chat.get('style') or '-':6}  {src:9}  {label}")
+
+    emit(data, as_json, text)
+
+
+
+MARK_READ_RISK = (
+    "Risk: Messages.app scripting cannot mark a chat read. Its dictionary only sends, logs in, and logs out, and chat objects have no read flag. "
+    "Private IMCore and SIP changes are not used. "
+    "mark-read therefore updates ~/Library/Messages/chat.db while Messages may have it open. "
+    "The only column written is message.is_read (set to 1 on incoming unread rows). "
+    "It does not vacuum, delete rows, touch other columns, or send. "
+    "A direct write can race with Messages, and the Dock badge can lag until Messages notices."
+)
+
+
+def cmd_mark_read(args):
+    as_json = args.json
+    has_all = bool(args.all)
+    to = (args.to or "").strip()
+    chat_guid = (args.chat_guid or "").strip()
+    if to and chat_guid:
+        die(2, "both_targets", "Pass either --to or --chat-guid, not both. Nothing was marked read.", as_json)
+    if has_all and (to or chat_guid):
+        die(2, "both_targets", "Pass either --all or one chat (--to or --chat-guid), not both. Nothing was marked read.", as_json)
+    if not has_all and not to and not chat_guid:
+        die(2, "missing_target", "Pass --all, or --to / --chat-guid for one chat. Nothing was marked read.", as_json)
+
+    chat = None
+    if not has_all:
+        con = open_db(as_json)
+        try:
+            chat = _resolve(con, chat_guid or to, args.service, as_json)
+            scoped = db._unread_count(con, chat["rowid"])
+            total = db._unread_count(con, None)
+        finally:
+            con.close()
+    else:
+        con = open_db(as_json)
+        try:
+            total = db._unread_count(con, None)
+            scoped = total
+        finally:
+            con.close()
+
+    if not args.force:
+        die(
+            2,
+            "needs_force",
+            f"Refusing to mark read without --force. {scoped} incoming unread row(s) in scope ({total} unread overall). Nothing was written. {MARK_READ_RISK}",
+            as_json,
+        )
+
+    try:
+        writer = db.connect_write()
+    except db.HistoryUnavailable as exc:
+        die(5, "needs_full_disk_access", exc.message, as_json)
+    try:
+        try:
+            result = db.mark_read(writer, None if chat is None else chat["rowid"])
+        except db.HistoryWriteError as exc:
+            die(1, "messages_error", exc.message, as_json)
+    finally:
+        writer.close()
+
+    data = {
+        "ok": True,
+        "marked": True,
+        "scope": "all" if has_all else "chat",
+        "sent": False,
+        **result,
+    }
+    if chat is not None:
+        data["chat"] = {k: chat[k] for k in ("guid", "name", "identifier", "service", "style")}
+
+    def text(d):
+        if d.get("chat"):
+            label = d["chat"].get("name") or d["chat"].get("identifier") or d["chat"].get("guid")
+            print(f"marked read {d['updated']} message(s) in {label}")
+        else:
+            print(f"marked read {d['updated']} message(s) across all chats")
+        print(f"unread before {d['unreadBefore']}  after {d['unreadAfter']}")
+        print("column: message.is_read only. nothing sent.")
+
+    emit(data, as_json, text)
+
+
 def cmd_gaps(args):
     as_json = getattr(args, "json", False)
     data = {"ok": True, "tool": "grok-messages", "version": VERSION, "gaps": GAPS}
@@ -632,6 +742,33 @@ def build_parser():
     attachments.add_argument("--limit", type=int, default=20)
     attachments.set_defaults(func=cmd_attachments)
 
+    unread = sub.add_parser("unread", help="Unread counts from chat.db. No message text. Does not mark read.")
+    add_json(unread)
+    unread.add_argument("--limit", type=int, default=20)
+    unread.set_defaults(func=cmd_unread)
+
+    mark = sub.add_parser(
+        "mark-read",
+        help="Mark incoming messages read. Requires --force. Does not send.",
+        description=(
+            "Mark incoming unread messages read by setting message.is_read to 1. "
+            "Nothing is written unless --force is set. This does not send, reply, or react.\n\n"
+            + MARK_READ_RISK
+            + "\n\n"
+            "Safer path rejected: Messages.app AppleScript/JXA. The scripting dictionary has no mark-read "
+            "command and no read property on chat or message (commands are send, login, and logout). "
+            "Opening a chat from the script would not clear is_read, and private IMCore is out of bounds."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    add_json(mark)
+    mark.add_argument("--all", action="store_true", help="Every incoming unread row on this Mac. Not a single chat.")
+    mark.add_argument("--to", help="One chat: phone, email, display name, or guid.")
+    mark.add_argument("--chat-guid", help="One chat by guid.")
+    mark.add_argument("--service", choices=("iMessage", "SMS", "RCS"), help="Limit --to when several chats match.")
+    mark.add_argument("--force", action="store_true", help="Actually write is_read. Without this, nothing is written.")
+    mark.set_defaults(func=cmd_mark_read)
+
     gaps = sub.add_parser("gaps")
     add_json(gaps)
     gaps.set_defaults(func=cmd_gaps)
@@ -645,7 +782,7 @@ def main(argv=None):
     if isinstance(limit, int):
         if limit < 1:
             die(2, "bad_request", "--limit must be at least 1.", getattr(args, "json", False))
-        cap = 40 if args.cmd in ("recent", "search") else 200
+        cap = 40 if args.cmd in ("recent", "search") else (50 if args.cmd == "unread" else 200)
         if limit > cap:
             die(2, "bad_request", f"--limit {limit} is above the cap ({cap}).", getattr(args, "json", False))
     try:
