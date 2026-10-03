@@ -10,7 +10,7 @@ from pathlib import Path
 
 import db
 
-VERSION = "0.2.4"
+VERSION = "0.2.5"
 LIB = Path(__file__).resolve().parent / "messages.js"
 ALLOWLIST = Path.home() / ".config" / "grok-messages" / "allowlist"
 MAX_TEXT = 4000
@@ -20,7 +20,7 @@ GAPS = [
     "Send only works for a chat currently in the Messages scripting list. Unknown-sender and junk chats are often absent there, so history can show them while send returns not_in_messages_ui. Nothing is sent in that case.",
     "send --to is a person only (phone, email, or a 1:1 chat). It never targets a group, even when that handle is a member of one. The send uses Messages' participant object (1:1). If the handle exists only in a group, send refuses and names that group's guid. Group sends require --chat-guid, which the user must name on purpose. This CLI does not create groups.",
     "attachments lists metadata for one chat (name, mime, bytes, sticker, date). It does not download, open, or copy the file, and it does not return the absolute path. Send still cannot attach a file. No tapbacks, stickers-as-send, message effects, edits, unsends, or replies. Send is plain text only, capped at 4000 characters.",
-    "No pin, mute, hide alerts, or Focus filter changes. mark-read always refuses, including with --force. Messages scripting cannot mark read (send, login, logout only). A chat.db is_read write does not sync the iPhone badge. The sync path is private IMCore, which this CLI will not use.",
+    "No pin, mute, hide alerts, or Focus filter changes. mark-read does not write chat.db and does not use IMCore. With --force it activates Messages and clicks Conversation > Mark All as Read only when that menu item is enabled. It does not send.",
     "Search looks at the message text column only. Attachment-only rows and a few attributed-body-only rows have null text and will not match. Snippets are capped.",
     "Reactions are labeled (love, like, dislike, laugh, emphasize, question, emoji) from the row itself. The message that was reacted to is not pulled in.",
     "An optional allowlist file (~/.config/grok-messages/allowlist) restricts send targets if it exists. One handle or chat guid per line. If the file exists and has no targets, every send is refused. If the file does not exist, --force is the only gate.",
@@ -52,6 +52,9 @@ def die(code, error, message, as_json):
         if error == "needs_full_disk_access":
             print("System Settings → Privacy & Security → Full Disk Access → Grok Bot and Grok Bot Helper on.", file=sys.stderr)
             print("Quit and reopen Grok Bot after changing that. Send does not need Full Disk Access.", file=sys.stderr)
+        if error == "accessibility_denied":
+            print("System Settings → Privacy & Security → Accessibility → allow the app that runs this CLI (Grok Bot Helper, Terminal, or osascript).", file=sys.stderr)
+            print("That prompt is one click. Do not retry in a loop. mark-read will not write chat.db instead.", file=sys.stderr)
     raise SystemExit(code)
 
 
@@ -203,7 +206,7 @@ def cmd_doctor(args):
             print(f"allowlist: on ({al['count']} targets)  {al['path']}")
         else:
             print("allowlist: off (send still needs --force)")
-        print("writes: send only, and only with --force. mark-read always refuses (no chat.db write, no IMCore)")
+        print("writes: send only with --force. mark-read --force drives Messages (activate, then Mark All as Read if enabled). No chat.db write.")
         print("send --to is 1:1 participant only; a group needs --chat-guid")
 
     emit(data, as_json, text)
@@ -574,18 +577,52 @@ def cmd_unread(args):
 
 
 
-MARK_READ_REFUSAL = (
-    "Refusing to mark read. Nothing was written and nothing was sent, with or without --force. "
-    "Messages.app scripting cannot mark a chat read: its dictionary only sends, logs in, and logs out, and chat objects have no read flag. "
-    "Setting ~/Library/Messages/chat.db message.is_read only flips a local flag. Messages does not treat that as its own read, so iCloud does not sync it and the iPhone badge stays. "
-    "The path that syncs read state is private IMCore, often with SIP disabled so a helper can be injected into Messages. This CLI does not use IMCore and does not change SIP. "
-    "There is no public or Messages-safe API here that clears the phone badge."
+
+UI_LIB = Path(__file__).resolve().parent / "mark_ui.js"
+MARK_READ_HELP = (
+    "Drives the Messages app. It does not write chat.db, send, type, or press Return, and it does not use IMCore or change SIP. "
+    "With --force, it activates Messages so the open conversation is seen (that is what cleared the Mac Dock badge in testing), "
+    "then clicks Conversation > Mark All as Read when that menu item is enabled. "
+    "--all is the collective menu. --to / --chat-guid only clicks Mark as Read, and only if that exact item is enabled. "
+    "Needs Automation for Messages and Accessibility for System Events. "
+    "The iPhone badge has to be confirmed on the phone."
 )
 
 
-def cmd_mark_read(args):
-    """Always refuse. Do not write chat.db. Do not call Messages send. Do not touch IMCore."""
-    as_json = args.json
+def _ui_denied(blob: str) -> str | None:
+    text = blob or ""
+    if "not allowed assistive" in text or "(-25211)" in text or "(-1719)" in text or "1002" in text and "assistive" in text.lower():
+        return "accessibility_denied"
+    if "-1743" in text or "Not authorized to send Apple events" in text:
+        return "automation_denied"
+    return None
+
+
+def call_mark_ui(payload, timeout, as_json):
+    proc = subprocess.run(
+        ["perl", "-e", "alarm shift @ARGV; exec @ARGV", str(timeout), "osascript", "-l", "JavaScript", str(UI_LIB), "--", json.dumps(payload)],
+        capture_output=True,
+        text=True,
+    )
+    blob = ((proc.stderr or "") + "\n" + (proc.stdout or "")).strip()
+    if proc.returncode in (-14, 142) or "Alarm clock" in (proc.stderr or ""):
+        die(4, "automation_timeout", f"Timed out after {timeout}s waiting for Messages. Nothing was sent.", as_json)
+    denied = _ui_denied(blob)
+    if proc.returncode != 0:
+        if denied == "accessibility_denied":
+            die(3, "accessibility_denied", blob, as_json)
+        if denied == "automation_denied":
+            die(3, "automation_denied", blob, as_json)
+        die(1, "messages_error", blob or "osascript failed", as_json)
+    raw = (proc.stdout or "").strip()
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        die(1, "messages_error", "Messages UI returned non-JSON: " + raw[:200], as_json)
+    return data
+
+
+def _targets_ok(args, as_json):
     has_all = bool(args.all)
     to = (args.to or "").strip()
     chat_guid = (args.chat_guid or "").strip()
@@ -594,20 +631,42 @@ def cmd_mark_read(args):
     if has_all and (to or chat_guid):
         die(2, "both_targets", "Pass either --all or one chat (--to or --chat-guid), not both. Nothing was marked read.", as_json)
     if not has_all and not to and not chat_guid:
-        die(2, "missing_target", "Pass --all, or --to / --chat-guid. Nothing was marked read. " + MARK_READ_REFUSAL, as_json)
+        die(2, "missing_target", "Pass --all, or --to / --chat-guid. Nothing was marked read.", as_json)
+    return has_all, to, chat_guid
 
-    note = ""
-    try:
-        con = db.connect()
-    except db.HistoryUnavailable:
-        note = " Local unread count was not read."
-    else:
+
+def cmd_mark_read(args):
+    """Drive Messages menus. Never write chat.db. Never send."""
+    as_json = args.json
+    has_all, to, chat_guid = _targets_ok(args, as_json)
+    if not args.force:
+        die(
+            2,
+            "needs_force",
+            "Refusing to drive Messages without --force. Nothing was activated, clicked, or sent. " + MARK_READ_HELP,
+            as_json,
+        )
+    if not has_all:
+        # Resolve so a bad target fails before any UI. Do not use the match to type or send.
+        con = open_db(as_json)
         try:
-            total = db.counts(con)["unreadMessages"]
-            note = f" Local incoming is_read=0 rows: {total}. That count is not the iPhone badge."
+            _resolve(con, chat_guid or to, args.service, as_json)
         finally:
             con.close()
-    die(2, "unsupported", MARK_READ_REFUSAL + note, as_json)
+        payload = {"op": "mark_front"}
+    else:
+        payload = {"op": "mark_all"}
+    data = call_mark_ui(payload, 25, as_json)
+    if not data.get("ok", False):
+        emit(data, as_json, lambda d: None)
+    data["sent"] = False
+    data["wroteDatabase"] = False
+
+    def text(d):
+        print(d.get("message") or d.get("action") or "mark-read")
+        print("nothing sent, chat.db not written")
+
+    emit(data, as_json, text)
 
 
 def cmd_gaps(args):
@@ -705,23 +764,16 @@ def build_parser():
 
     mark = sub.add_parser(
         "mark-read",
-        help="Refuses. No public mark-read syncs to the iPhone. --force does not write.",
-        description=(
-            "Refuse to mark messages read.\n\n"
-            + MARK_READ_REFUSAL
-            + "\n\n"
-            "--all, --to, and --chat-guid select a scope for the refusal message only. "
-            "--force does not enable a write. This command never updates chat.db, never sends, "
-            "and never loads private IMCore."
-        ),
+        help="Drive Messages to mark chats read. Needs --force. Does not send.",
+        description=MARK_READ_HELP,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     add_json(mark)
-    mark.add_argument("--all", action="store_true", help="Scope note only. Does not write.")
-    mark.add_argument("--to", help="Scope note only. Does not write.")
-    mark.add_argument("--chat-guid", help="Scope note only. Does not write.")
+    mark.add_argument("--all", action="store_true", help="Activate Messages, then click Mark All as Read if that item is enabled.")
+    mark.add_argument("--to", help="One chat. Clicks Mark as Read only when that exact menu item is enabled.")
+    mark.add_argument("--chat-guid", help="One chat by guid. Same menu rule as --to.")
     mark.add_argument("--service", choices=("iMessage", "SMS", "RCS"))
-    mark.add_argument("--force", action="store_true", help="Accepted and ignored. Still refuses. Does not write chat.db.")
+    mark.add_argument("--force", action="store_true", help="Actually drive Messages. Without this, the UI is not touched.")
     mark.set_defaults(func=cmd_mark_read)
 
     gaps = sub.add_parser("gaps")
