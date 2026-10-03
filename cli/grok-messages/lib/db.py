@@ -457,3 +457,51 @@ def _snippet(text: str, needle: str) -> str:
     if end < len(flat):
         chunk = chunk + "…"
     return chunk
+
+
+def list_attachments(con, chat_rowid: int, limit: int):
+    """Metadata only. No message text, no absolute paths, no sticker blobs."""
+    total = con.execute(
+        """
+        select count(*)
+        from attachment a
+        join message_attachment_join maj on maj.attachment_id = a.ROWID
+        join chat_message_join cmj on cmj.message_id = maj.message_id
+        where cmj.chat_id = ?
+        """,
+        (chat_rowid,),
+    ).fetchone()[0]
+    rows = con.execute(
+        """
+        select a.ROWID as id, a.mime_type as mime_type, a.uti as uti,
+               a.total_bytes as total_bytes, a.is_outgoing as is_outgoing,
+               a.is_sticker as is_sticker, a.transfer_name as transfer_name,
+               a.created_date as created_date, a.filename as filename,
+               a.hide_attachment as hide_attachment
+        from attachment a
+        join message_attachment_join maj on maj.attachment_id = a.ROWID
+        join chat_message_join cmj on cmj.message_id = maj.message_id
+        where cmj.chat_id = ?
+        order by a.created_date desc
+        limit ?
+        """,
+        (chat_rowid, limit),
+    )
+    out = []
+    for row in rows:
+        name = row["transfer_name"] or None
+        if not name and row["filename"]:
+            name = Path(str(row["filename"])).name
+        out.append({
+            "id": row["id"],
+            "name": name,
+            "mime": row["mime_type"],
+            "uti": row["uti"],
+            "bytes": row["total_bytes"],
+            "outgoing": bool(row["is_outgoing"]),
+            "sticker": bool(row["is_sticker"]),
+            "hidden": bool(row["hide_attachment"]),
+            "at": apple_to_iso(row["created_date"]),
+            "stored": bool(row["filename"]),
+        })
+    return int(total), out

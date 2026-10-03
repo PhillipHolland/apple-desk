@@ -536,15 +536,20 @@ def search(query, limit=20, folder=None, account=None):
     }
 
 
-def list_tags(limit=50):
+def list_tags(limit=50, folder=None):
     st = status()
     if not st.get("exists"):
         return {"ok": False, "error": "no_index", "message": "No search index yet. Run: grok-notes reindex"}
     counts = {}
     shown = {}
     con = connect()
+    sql = "SELECT title, body FROM notes WHERE trash = 0"
+    params = []
+    if folder:
+        sql += " AND (folder = ? OR folder_path = ?)"
+        params.extend([folder, folder])
     try:
-        for title, body in con.execute("SELECT title, body FROM notes WHERE trash = 0"):
+        for title, body in con.execute(sql, params):
             blob = f"{title or ''}\n{body or ''}"
             for tag in TAG_RE.findall(blob):
                 key = tag.casefold()
@@ -555,7 +560,15 @@ def list_tags(limit=50):
     ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
     limit = max(1, min(int(limit or 50), 500))
     tags = [{"tag": shown[k], "count": counts[k]} for k, _ in ranked[:limit]]
-    return {"ok": True, "source": "cache", "total": len(ranked), "truncated": len(ranked) > len(tags), "tags": tags, "index": st}
+    return {
+        "ok": True,
+        "source": "cache",
+        "folder": folder,
+        "total": len(ranked),
+        "truncated": len(ranked) > len(tags),
+        "tags": tags,
+        "index": st,
+    }
 
 
 def cached_folders():

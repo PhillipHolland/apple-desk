@@ -9,7 +9,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "0.1.1"
+VERSION = "0.1.2"
 LIB = Path(__file__).resolve().parent / "reminders.js"
 
 GAPS = [
@@ -262,11 +262,30 @@ def cmd_show(args):
     emit(data, as_json, lambda d: print(json.dumps(d.get("reminder"), indent=2)))
 
 
+def _due_ok(value):
+    import re
+    return bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}( \d{2}:\d{2})?", value.strip()))
+
 def cmd_add(args):
     as_json = args.json
     title = (args.title or "").strip()
     if not title:
         die(2, "missing_title", "Pass --title. Nothing was added.", as_json)
+    if args.due and not _due_ok(args.due):
+        die(2, "bad_request", "Due must be YYYY-MM-DD or YYYY-MM-DD HH:MM. Reminders was not called.", as_json)
+    if args.dry_run:
+        data = {
+            "ok": True,
+            "dryRun": True,
+            "wouldAdd": True,
+            "title": title,
+            "list": args.list,
+            "due": args.due,
+            "priority": args.priority,
+            "message": "dry-run: Reminders.app was not called.",
+        }
+        emit(data, as_json, lambda d: print(f"dry-run add {d.get('title')!r} (Reminders not called)"))
+        return
     payload = {"op": "add", "title": title}
     if args.list:
         payload["list"] = args.list
@@ -359,6 +378,7 @@ def build_parser():
     add.add_argument("--due", help="YYYY-MM-DD or YYYY-MM-DD HH:MM, Mac local time")
     add.add_argument("--notes")
     add.add_argument("--priority", choices=("high", "medium", "low", "none"))
+    add.add_argument("--dry-run", action="store_true", help="Validate only; do not call Reminders.app")
     add.set_defaults(func=cmd_add)
 
     done = sub.add_parser("done")

@@ -248,7 +248,13 @@ function run(argv) {
     for (var s = 0; s < allShow.length; s++) {
       var srows = bulk(allShow[s], true);
       for (var k = 0; k < srows.length; k++) {
-        if (srows[k].id === id) return JSON.stringify({ok: true, reminder: publicRow(srows[k], true)});
+        if (srows[k].id === id) {
+          var shown = publicRow(srows[k], true);
+          var target = allShow[s].reminders[k];
+          try { shown.remindMeDate = isoLocal(target.remindMeDate()); } catch (eR) { shown.remindMeDate = null; }
+          try { shown.allDay = Boolean(target.alldayDueDate()); } catch (eA) { shown.allDay = null; }
+          return JSON.stringify({ok: true, reminder: shown});
+        }
       }
     }
     return fail("not_found", "No reminder with that id.");

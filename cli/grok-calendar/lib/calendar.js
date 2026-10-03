@@ -146,6 +146,34 @@ function listEvents(app, payload, isSearch) {
   };
 }
 
+function recurrenceInfo(ev) {
+  return safe(function () {
+    var r = ev.recurrence();
+    if (r === null || r === undefined || r === "") return null;
+    if (typeof r === "string") return { summary: r };
+    var summary = "";
+    try { summary = String(r); } catch (e) { summary = ""; }
+    var info = { summary: summary || null };
+    try { if (r.recurrenceType) info.frequency = String(r.recurrenceType()); } catch (e2) {}
+    try { if (r.endDate) info.until = formatLocal(r.endDate()); } catch (e3) {}
+    return info;
+  }, null);
+}
+
+function alarmCount(ev) {
+  return safe(function () {
+    var n = 0;
+    function add(spec) {
+      try { n += asList(spec()).length; } catch (e) {}
+    }
+    add(function () { return ev.soundAlarms(); });
+    add(function () { return ev.displayAlarms(); });
+    add(function () { return ev.mailAlarms(); });
+    add(function () { return ev.openFileAlarms(); });
+    return n;
+  }, null);
+}
+
 function showEvent(app, payload) {
   var found = findEvent(app, payload);
   if (!found.ok) return found;
@@ -160,7 +188,9 @@ function showEvent(app, payload) {
     notes: clip(empty(safe(function () { return ev.description(); }, null)), 2000),
     url: empty(safe(function () { return String(ev.url()); }, null)),
     status: empty(safe(function () { return String(ev.status()); }, null)),
-    recurrence: empty(safe(function () { return ev.recurrence(); }, null)),
+    recurrence: recurrenceInfo(ev),
+    attendeeCount: safe(function () { return asList(ev.attendees()).length; }, null),
+    alarmCount: alarmCount(ev),
     calendar: empty(found.calendar.name()),
     calendarId: safe(function () { return found.calendar.uid(); }, null),
     writable: !!safe(function () { return found.calendar.writable(); }, false)

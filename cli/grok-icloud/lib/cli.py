@@ -9,7 +9,7 @@ import os
 import sys
 from pathlib import Path
 
-VERSION = "0.1.0"
+VERSION = "0.1.1"
 TOOL = "grok-icloud"
 # UF_DATALESS on APFS. A dataless file is an iCloud placeholder that is not on disk.
 UF_DATALESS = 0x40000000
@@ -23,7 +23,7 @@ TEXT_EXTENSIONS = {
 
 GAPS = [
     "This is a Finder-class view of the iCloud Drive folder at ~/Library/Mobile Documents/com~apple~CloudDocs. It is not iCloud.com, not CloudKit, and not the other ubiquity containers under ~/Library/Mobile Documents (app libraries, Mail, Messages).",
-    "Evicted files stay evicted. A dataless file (UF_DATALESS) or a name ending in .icloud is reported as evicted and is never opened. There is no download flag in 0.1.0. brctl, fileproviderctl, and osascript are not called.",
+    "Evicted files stay evicted. A dataless file (UF_DATALESS) or a name ending in .icloud is reported as evicted and is never opened. There is no download flag. brctl, fileproviderctl, and osascript are not called.",
     "cat reads only a file that is already local, looks like text, and is within --max-bytes (default 8192, hard cap 65536). Anything else is refused with no body. It does not materialize a placeholder.",
     "doctor, tree, and find are depth- and count-capped. They skip .Trash and .TemporaryItems unless that directory is the path you named. They do not walk the whole drive.",
     "A folder named Desktop or Documents inside iCloud Drive is not the Mac Desktop or Documents folder unless those two paths are the same directory. doctor reports that separately. This CLI does not turn Desktop & Documents sync on or off.",
@@ -542,7 +542,92 @@ def cmd_cat(args):
     emit(data, as_json, show)
 
 
-def cmd_gaps(_args):
+def cmd_summary(args):
+    """Size rollup of files already on disk. Evicted placeholders are counted, not downloaded."""
+    as_json = args.json
+    limit_nodes = clamp(args.max_nodes, 4000, 1, 20000, as_json, "--max-nodes")
+    depth_cap = clamp(args.depth, 4, 0, 8, as_json, "--depth")
+    path, rel = resolve_user_path(args.relpath, as_json)
+    if path.is_symlink() or not path.is_dir():
+        die(2, "not_a_directory", "summary needs a folder inside iCloud Drive.", as_json)
+    nodes = 0
+    capped = False
+    local_bytes = 0
+    local_files = 0
+    evicted = 0
+    dirs = 0
+    largest = []
+    stack = [(path, 0)]
+    base = root_resolved()
+    while stack:
+        current, depth = stack.pop()
+        try:
+            iterator = os.scandir(current)
+        except OSError:
+            continue
+        with iterator:
+            children = []
+            for ent in iterator:
+                if nodes >= limit_nodes:
+                    capped = True
+                    break
+                nodes += 1
+                info = classify(ent)
+                if info["kind"] == "dir":
+                    dirs += 1
+                    if depth + 1 <= depth_cap and not skipped(ent.name) and info["state"] != "evicted":
+                        children.append(ent.path)
+                elif info["state"] == "evicted" or info["kind"] == "placeholder":
+                    evicted += 1
+                elif info["kind"] == "file" and info["state"] == "local":
+                    local_files += 1
+                    size = info["bytes"] or 0
+                    local_bytes += size
+                    try:
+                        rel_name = Path(ent.path).resolve().relative_to(base).as_posix()
+                    except (OSError, ValueError):
+                        rel_name = info["name"]
+                    largest.append((size, rel_name))
+            if capped:
+                break
+            for child in children:
+                stack.append((Path(child), depth + 1))
+        if capped:
+            break
+    largest.sort(reverse=True)
+    top = [{"path": name, "bytes": size} for size, name in largest[:8]]
+    data = {
+        "ok": True,
+        "path": rel,
+        "downloads": False,
+        "nodesVisited": nodes,
+        "capped": capped,
+        "maxNodes": limit_nodes,
+        "depth": depth_cap,
+        "directories": dirs,
+        "filesLocal": local_files,
+        "filesEvicted": evicted,
+        "localBytes": local_bytes,
+        "largestLocal": top,
+    }
+
+    def text(d):
+        print(f"summary {d['path'] or '.'}")
+        print(f"local files {d['filesLocal']}  local bytes {d['localBytes']}  evicted {d['filesEvicted']}  dirs {d['directories']}")
+        if d["capped"]:
+            print(f"(stopped at {d['maxNodes']} entries; not a full drive total)")
+        for row in d["largestLocal"]:
+            print(f"{row['bytes']:12}  {row['path']}")
+
+    emit(data, as_json, text)
+
+
+def cmd_gaps(args):
+    as_json = getattr(args, "json", False)
+    data = {"ok": True, "tool": TOOL, "version": VERSION, "gaps": GAPS}
+    if as_json:
+        print(json.dumps(data))
+        return
     print("grok-icloud gaps")
     for item in GAPS:
         print(f"- {item}")
@@ -588,7 +673,15 @@ def build_parser():
     cat.add_argument("--max-bytes", type=int)
     cat.set_defaults(func=cmd_cat)
 
+    summary = sub.add_parser("summary", help="Local byte totals. Does not download evicted files.")
+    add_json(summary)
+    summary.add_argument("relpath", nargs="?")
+    summary.add_argument("--depth", type=int)
+    summary.add_argument("--max-nodes", type=int)
+    summary.set_defaults(func=cmd_summary)
+
     gaps = sub.add_parser("gaps")
+    add_json(gaps)
     gaps.set_defaults(func=cmd_gaps)
     return parser
 

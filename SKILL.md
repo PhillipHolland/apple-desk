@@ -2,9 +2,10 @@
 name: Apple Desk
 description: >-
   Use when the user wants Apple Reminders, Calendar, Notes, Contacts,
-  iMessage, Shortcuts, or Apple Mail on their Mac: look up, organize, or draft.
+  iMessage, Shortcuts, Apple Mail, iCloud Drive, or a scoped Spotlight
+  search on their Mac: look up, organize, or draft.
   One skill for grok-reminders, grok-calendar, grok-notes, grok-contacts,
-  grok-messages, grok-shortcuts, grok-mail, and grok-icloud.
+  grok-messages, grok-shortcuts, grok-mail, grok-icloud, and grok-spotlight.
   Not Google Calendar, not Passwords, not HomeKit, not cloud Apple APIs.
 ---
 # Apple Desk
@@ -13,12 +14,13 @@ One skill for the Mac-local CLIs. Not a cloud connector. Run every command on th
 
 | Area | CLI | Version checked 2026-10-03 | Backend |
 | --- | --- | --- | --- |
-| Reminders | `grok-reminders` | 0.1.1 | Reminders.app JavaScript. In-house, not RemCTL. Pattern credit: Federico Viticci / MacStories. RemCTL is not a dependency. Hard 20–25s timeouts; blocked on Automation Allow |
-| Calendar | `grok-calendar` | 0.1.1 | Calendar.app JavaScript (`osascript`). Read by default. Hard 20–25s timeouts; blocked on Automation Allow |
-| Notes | `grok-notes` | 0.2.0 | Notes.app JavaScript (`osascript`). Search uses a local cache |
-| Contacts | `grok-contacts` | 0.1.0 | Contacts.app JavaScript |
-| iMessage | `grok-messages` | 0.2.0 | Messages.app JavaScript to send. `~/Library/Messages/chat.db` read-only for history. Person send rules are under Agent rules |
-| Shortcuts | `grok-shortcuts` | 0.1.0 | `/usr/bin/shortcuts`. List is safe. `run` does nothing without `--force` |
+| Reminders | `grok-reminders` | 0.1.2 | Reminders.app JavaScript. In-house, not RemCTL. Pattern credit: Federico Viticci / MacStories. RemCTL is not a dependency. Hard 20–25s timeouts; blocked on Automation Allow. `add --dry-run` does not call Reminders |
+| Calendar | `grok-calendar` | 0.1.2 | Calendar.app JavaScript (`osascript`). Read by default. Hard 20–25s timeouts; blocked on Automation Allow. create/update/delete `--dry-run` stays offline |
+| Notes | `grok-notes` | 0.2.1 | Notes.app JavaScript (`osascript`). Search uses a local cache. `tags --folder` is cache-only |
+| Contacts | `grok-contacts` | 0.1.1 | Contacts.app JavaScript. `search --field phone or email` is refused and does not call Contacts |
+| iMessage | `grok-messages` | 0.2.1 | Messages.app JavaScript to send. `~/Library/Messages/chat.db` read-only for history and attachment metadata. Person send rules are under Agent rules |
+| Shortcuts | `grok-shortcuts` | 0.1.1 | `/usr/bin/shortcuts`. List is safe. `run` does nothing without `--force`. `--dry-run` only checks the name |
+| Spotlight | `grok-spotlight` | 0.1.0 | `/usr/bin/mdfind`. Paths only. Default scope is Documents and Desktop. Keychain, Messages, Mail, HomeKit, Safari, and Cookies paths are refused |
 
 Google calendars stay on the Google Calendar connector. `grok-calendar` only sees calendars already in Calendar.app. Prefer the Gmail connector for phillip.b.holland@gmail.com cloud mail; `grok-mail` is for Mail.app on this Mac. Passwords and HomeKit are out on purpose.
 
@@ -42,6 +44,7 @@ Google calendars stay on the Google Calendar connector. `grok-calendar` only see
 - `~/bin/grok-shortcuts` → `~/Developer/grok-shortcuts` (also `~/.local/bin`)
 - `~/bin/grok-mail` → `~/Developer/grok-mail` (also `~/.local/bin`)
 - `~/bin/grok-icloud` → `~/Developer/grok-icloud` (also `~/.local/bin`)
+- `~/bin/grok-spotlight` → `~/Developer/grok-spotlight` (also `~/.local/bin`)
 
 `~/bin/remctl` may still be on disk. Do not call it.
 
@@ -81,8 +84,9 @@ Checked 2026-10-03. Notes, contacts, and messages doctors were ok around 12:45 P
 | Reminders lists, due dates, complete, delete | `grok-reminders`: lists, today, upcoming, search, show, add, done, delete one with `--force` | Smart lists, sections, tags, subtasks, recurrence, location alarms, move, flag writes, sharing, Recently Deleted. `remctl` is not the path. Doctor not green yet (exit 4, not retried) |
 | Calendar.app calendars and events | List calendars, list events in a range (titles and times), search title/location, show one uid, create, update, delete one event with `--force` | Invites, RSVP, alarms, travel time, recurrence edits, moving an event to another calendar, mass delete. Google Calendar cloud. Passwords. HomeKit |
 | Notes folders, text, checklists, search, trash | Folder tree, list, show, cached search (~0.08s here; 1215 notes), create/edit/append/rename/move, delete to Recently Deleted or permanent, folder delete, empty trash, list attachments, read shared flag, add an unchecked checklist row | Pin, lock, toggle a checkbox, duplicate, drawings, scans, tables, audio, attachment bytes, tag objects, smart folders, start a share or copy a collab link. `search --live` is the slow path (~30s). Writes do not update the cache until `reindex` |
-| Contacts cards and groups | Counts, group names, search by name or organization, show one card, create/update/delete, labeled phone/email/url, group membership | Search by phone, email, or street. Merge or unlink. Photos, posters, Memoji. Smart lists, Medical ID, emergency contacts, vCard import/export. Group membership on `show` is skipped above 80 groups |
-| Messages inbox, threads, send | Primary chat list, recent text in one named chat, text search, dry-run, plain-text 1:1 send via a Messages participant. Group send only with `--chat-guid` after the user named that group | Sending `--to` a handle into a group that merely contains them. New chat, new group, attachments, tapbacks, stickers, effects, edit, unsend, reply, pin, mute, mark read. History for chats missing from the scripting list (often unknown senders). Attachment-only rows (null text). iCloud.com |
+| Contacts cards and groups | Counts, group names, search by name or organization, show one card, create/update/delete, labeled phone/email/url, group membership | Search by phone, email, or street (`search --field phone or email` exits `unsupported_field` and does not call Contacts). Merge or unlink. Photos, posters, Memoji. Smart lists, Medical ID, emergency contacts, vCard import/export. Group membership on `show` is skipped above 80 groups |
+| Messages inbox, threads, send | Primary chat list, recent text in one named chat, text search, dry-run, plain-text 1:1 send via a Messages participant. Group send only with `--chat-guid` after the user named that group. `attachments` lists metadata for one chat (name, mime, bytes) | Sending `--to` a handle into a group that merely contains them. New chat, new group, sending or opening an attachment, tapbacks, stickers, effects, edit, unsend, reply, pin, mute, mark read. History for chats missing from the scripting list (often unknown senders). Attachment-only rows (null text). iCloud.com |
+| Files on this Mac | `grok-spotlight search` returns paths under Documents and Desktop, or a folder you pass with `--onlyin` | File contents. Keychains, Messages, Mail, HomeKit, Passes, Safari, Cookies. Whole-disk search |
 
 `grok-reminders gaps`, `grok-calendar gaps`, `grok-notes gaps`, `grok-contacts gaps`, `grok-messages gaps`, and `grok-shortcuts gaps` print the same limits. Trust those if they disagree with this table.
 
@@ -127,6 +131,7 @@ grok-notes folders --json                 # --cached skips Apple Events
 grok-notes list "Notes" --limit 20 --json
 grok-notes show --id NOTEID --json        # or exact title; --full beyond 4000 chars
 grok-notes tags --limit 30 --json
+grok-notes tags --folder "Notes" --json   # cache only; does not start --live
 grok-notes create-note --title "Title" --body "text" --folder "Folder" --account "iCloud"
 grok-notes edit --id NOTEID --append "more"
 grok-notes move --id NOTEID --to-folder "Folder"
@@ -144,7 +149,7 @@ grok-shortcuts run "Shortcut Name" --force
 grok-shortcuts gaps
 ```
 
-`list` and `doctor` never run a shortcut. `run` without `--force` exits 2. Do not pass `--force` unless the user named that shortcut and accepted its side effects.
+`list` and `doctor` never run a shortcut. `list --folders` lists folder names. `list --folder "Name"` lists shortcuts in that folder. This CLI does not call `shortcuts view` (that opens the app). `run` without `--force` exits 2. `run --dry-run` checks the name and does not run it. Do not pass `--force` unless the user named that shortcut and accepted its side effects.
 
 ```bash
 grok-contacts doctor --json
@@ -158,7 +163,7 @@ grok-contacts create-group "Engineers"
 grok-contacts delete-group "Engineers" --force
 ```
 
-`doctor` prints counts only, not the Me card's name or numbers. `search` needs at least 2 characters, matches name and organization only, and refuses more than 200 hits. `search` and `groups` do not include phones or emails. `show` does, for one id they named.
+`doctor` prints counts only, not the Me card's name or numbers. `search` needs at least 2 characters, matches name and organization only, and refuses more than 200 hits. `search --field phone` and `search --field email` exit `unsupported_field` without calling Contacts. `search` and `groups` do not include phones or emails. `show` does, for one id they named.
 
 ### Phase 4 — Messages send
 
@@ -175,7 +180,10 @@ grok-messages send --help
 grok-messages send --to "+15551212" --text "hello" --dry-run
 grok-messages send --to "+15551212" --text "hello" --service iMessage --force
 grok-messages send --chat-guid "GUID" --text "hello" --dry-run
+grok-messages attachments --chat-guid "GUID" --limit 20 --json
 ```
+
+`attachments` is read-only metadata (name, mime, bytes, sticker, date). It does not print the absolute path and does not open or send the file. Prefer `--chat-guid` when the chat might be a group.
 
 `doctor` prints counts, not handles. `chats` has handles and counts, not message text. Summarize; do not dump the inbox. `recent` and `search` cap at 40 rows. Search needs 2 characters and refuses more than 500 hits. Read-side `--to` can still match a chat guid, phone (`+1` assumed for 10-digit US), email, or exact display name, which may be a group. Send-side `--to` is different: person or 1:1 only. It must not deliver into a group. `refusing_group` means stop and ask; the fix is `--chat-guid` only after they name the group. Ambiguous 1:1 matches exit 2 and list guid, service, and filter only.
 
@@ -200,10 +208,20 @@ grok-icloud ls --json --limit 50
 grok-icloud tree --depth 1 --json
 grok-icloud find "*.pdf" --limit 20 --json
 grok-icloud cat "path/to/file.txt"
-grok-icloud gaps
+grok-icloud summary --depth 2 --json
+grok-icloud gaps --json
 ```
 
-CloudDocs only (`~/Library/Mobile Documents/com~apple~CloudDocs`). Evicted files report `evicted` and are not downloaded. No `--download`. Prefer Google Drive connector for Drive files.
+CloudDocs only (`~/Library/Mobile Documents/com~apple~CloudDocs`). Evicted files report `evicted` and are not downloaded. No `--download`. `summary` totals local bytes and stops at a node cap; a capped summary is not the whole drive. Prefer Google Drive connector for Drive files.
+
+```bash
+grok-spotlight doctor --json
+grok-spotlight search "query" --limit 20 --json
+grok-spotlight search "report" --name --onlyin ~/Documents
+grok-spotlight gaps --json
+```
+
+Spotlight returns paths, not file contents. Default scope is `~/Documents` and `~/Desktop`. Do not point `--onlyin` at Keychains, Messages, Mail, HomeKit, Safari, or Cookies; the CLI refuses those.
 
 ## Demo (safe)
 
@@ -226,14 +244,17 @@ CloudDocs only (`~/Library/Mobile Documents/com~apple~CloudDocs`). Evicted files
 Extra Apple connectors, highest feasibility first. Voice Memos and anything voice-related are out. Calendar is built but its doctor is blocked. Shortcuts list works.
 
 1. **Calendar** — built. `grok-calendar` via Calendar.app JXA. Automation, plus Calendars privacy if event data is still blocked. Ops: read, search, create, update, delete one. Fits the existing Automation click. Not the same grant as Reminders.
-2. **Shortcuts** — spike is in. `grok-shortcuts` lists and can run. No Full Disk Access. `run` needs `--force` because a shortcut can change other apps. Editing shortcut contents is not realistic. 35 shortcuts on 2026-10-03. None were run.
-3. **Mail** — built as spike. `grok-mail` 0.1.1: read/list/search/show + gated draft. No send. Hard 20–25s timeouts + body clip 800. Doctor timed out 2026-10-03 (~1:13 PM CT, exit 4). Do not retry until Allow. Prefer Gmail connector for cloud Gmail.
-4. **Freeform** — Freeform.app scripting can open a board. Search and layout edits inside a board are mostly unsupported. Not built.
-5. **Journal** — Journal.app has almost no AppleScript. The local store is TCC-walled. Do not scrape it. Not built.
-6. **Photos** — Photos.app / PhotoKit. Separate Photos privacy. Libraries are huge and iCloud originals may be unloaded. Edits are destructive. Not built.
-7. **HomeKit** — separate Home permission. Controlling accessories is a safety boundary. Do not touch.
-8. **Passwords** — Keychain and Passwords. Do not touch.
+2. **Shortcuts** — built. `grok-shortcuts` 0.1.1 lists folders and can run. No Full Disk Access. `run` needs `--force` because a shortcut can change other apps. `--dry-run` does not run. Editing shortcut contents is not realistic. 35 shortcuts were listed earlier on 2026-10-03. None were run this pass.
+3. **Spotlight** — built. `grok-spotlight` 0.1.0. Paths only. No new TCC for Documents, Desktop, or Developer.
+4. **Mail** — built as spike. `grok-mail` 0.1.2: read/list/search/show + gated draft. No send. Hard 20–25s timeouts + body clip 800. Doctor timed out 2026-10-03 (~1:13 PM CT, exit 4). Do not retry until Allow. Prefer Gmail connector for cloud Gmail.
+5. **Freeform** — Freeform.app scripting can open a board. Search and layout edits inside a board are mostly unsupported. Not built.
+6. **Journal** — Journal.app has almost no AppleScript. The local store is TCC-walled. Do not scrape it. Not built.
+7. **Photos** — Photos.app / PhotoKit. Separate Photos privacy. Libraries are huge and iCloud originals may be unloaded. Edits are destructive. Not built.
+8. **HomeKit** — separate Home permission. Controlling accessories is a safety boundary. Do not touch.
+9. **Passwords** — Keychain and Passwords. Do not touch.
 
 Last verified on the office Mac, 2026-10-03: macOS 27.0, Notes 4.13, Contacts 14.0, Messages 26.0. Notes, contacts, and messages doctors were ok earlier. `grok-messages` 0.2.0: a person target that only matches a group returns `refusing_group`. A fixture and 35 real handles that also sit in groups resolved to a 1:1 or a refusal. No message was sent. `grok-calendar` doctor ~12:58 PM CT exited 4. `grok-reminders` 0.1.1 is installed (timeouts capped 20–25s); its first doctor timed out (exit 4) and was not retried. `grok-shortcuts` 0.1.0 listed 35 shortcuts; `run` without `--force` exited 2. Snapshot: `~/Developer/AUDIT.md` on that Mac.
 
-`grok-mail` 0.1.1 hardened 2026-10-03 (timeouts 20–25s, body clip 800); earlier doctor exit 4 not retried. Draft without --force exits needs_force.
+`grok-mail` 0.1.2: draft `--dry-run` checks subject and `@` and does not call Mail. Earlier doctor exit 4 was not retried. Draft without --force exits needs_force.
+
+Scope map: `docs/SCOPE_AUDIT.md` in the private apple-desk repo. `grok-spotlight` 0.1.0 is the AFK spike. Focus, Safari bookmarks, Find My, Wallet, Journal, Photos, Voice Memos, and Keychain stay out.

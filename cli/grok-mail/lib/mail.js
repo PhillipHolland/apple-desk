@@ -395,6 +395,8 @@ function summaryOf(msg, found) {
     dateSent: formatLocal(safe(function () { return msg.dateSent(); }, null)),
     read: !!safe(function () { return msg.readStatus(); }, false),
     flagged: !!safe(function () { return msg.flaggedStatus(); }, false),
+    junk: !!safe(function () { return msg.junkMailStatus(); }, false),
+    replied: !!safe(function () { return msg.wasRepliedTo(); }, false),
     mailbox: found.name || null
   };
 }

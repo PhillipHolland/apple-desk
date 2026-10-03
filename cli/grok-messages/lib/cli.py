@@ -10,7 +10,7 @@ from pathlib import Path
 
 import db
 
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 LIB = Path(__file__).resolve().parent / "messages.js"
 ALLOWLIST = Path.home() / ".config" / "grok-messages" / "allowlist"
 MAX_TEXT = 4000
@@ -19,7 +19,7 @@ GAPS = [
     "Messages 26 scripting can list chats (id, name, participants) and send text to an existing chat. It cannot read message history. History comes from ~/Library/Messages/chat.db and needs Full Disk Access for the process that runs this CLI (Grok Bot Helper when an agent runs it).",
     "Send only works for a chat currently in the Messages scripting list. Unknown-sender and junk chats are often absent there, so history can show them while send returns not_in_messages_ui. Nothing is sent in that case.",
     "send --to is a person only (phone, email, or a 1:1 chat). It never targets a group, even when that handle is a member of one. The send uses Messages' participant object (1:1). If the handle exists only in a group, send refuses and names that group's guid. Group sends require --chat-guid, which the user must name on purpose. This CLI does not create groups.",
-    "No attachments, tapbacks, stickers, message effects, edits, unsends, or replies. Send is plain text only, capped at 4000 characters.",
+    "attachments lists metadata for one chat (name, mime, bytes, sticker, date). It does not download, open, or copy the file, and it does not return the absolute path. Send still cannot attach a file. No tapbacks, stickers-as-send, message effects, edits, unsends, or replies. Send is plain text only, capped at 4000 characters.",
     "No pin, mute, hide alerts, mark read, or Focus filter changes.",
     "Search looks at the message text column only. Attachment-only rows and a few attributed-body-only rows have null text and will not match. Snippets are capped.",
     "Reactions are labeled (love, like, dislike, laugh, emphasize, question, emoji) from the row itself. The message that was reacted to is not pulled in.",
@@ -510,7 +510,46 @@ def cmd_send(args):
     emit(data, as_json, show_sent)
 
 
-def cmd_gaps(_args):
+def cmd_attachments(args):
+    as_json = args.json
+    target = (args.chat_guid or args.to or "").strip()
+    if not target:
+        die(2, "missing_target", "Pass --chat-guid or --to. This only lists metadata. Nothing was sent.", as_json)
+    if not 1 <= args.limit <= 40:
+        die(2, "bad_request", "--limit must be 1 through 40.", as_json)
+    con = open_db(as_json)
+    try:
+        chat = _resolve(con, target, args.service, as_json)
+        total, rows = db.list_attachments(con, chat["rowid"], args.limit)
+    finally:
+        con.close()
+    data = {
+        "ok": True,
+        "readOnly": True,
+        "chat": {k: chat[k] for k in ("guid", "name", "identifier", "service", "style")},
+        "count": total,
+        "returned": len(rows),
+        "attachments": rows,
+    }
+
+    def text(d):
+        label = d["chat"].get("name") or d["chat"].get("identifier") or d["chat"].get("guid")
+        print(f"{label}  {d['count']} attachments, showing {d['returned']} (metadata only)")
+        for row in d["attachments"]:
+            name = row.get("name") or "(unnamed)"
+            mime = row.get("mime") or "-"
+            size = row.get("bytes")
+            print(f"{row.get('at') or '-':25}  {mime:24}  {size if size is not None else '-'}  {name}")
+
+    emit(data, as_json, text)
+
+
+def cmd_gaps(args):
+    as_json = getattr(args, "json", False)
+    data = {"ok": True, "tool": "grok-messages", "version": VERSION, "gaps": GAPS}
+    if as_json:
+        print(json.dumps(data))
+        return
     print("grok-messages gaps")
     for item in GAPS:
         print(f"- {item}")
@@ -585,7 +624,16 @@ def build_parser():
     send.add_argument("--dry-run", action="store_true", help="Resolve the target and print the route. Never sends, even with --force.")
     send.set_defaults(func=cmd_send)
 
+    attachments = sub.add_parser("attachments", help="Metadata for files in one chat. Does not open or send them.")
+    add_json(attachments)
+    attachments.add_argument("--to")
+    attachments.add_argument("--chat-guid")
+    attachments.add_argument("--service", choices=("iMessage", "SMS", "RCS"))
+    attachments.add_argument("--limit", type=int, default=20)
+    attachments.set_defaults(func=cmd_attachments)
+
     gaps = sub.add_parser("gaps")
+    add_json(gaps)
     gaps.set_defaults(func=cmd_gaps)
     return parser
 

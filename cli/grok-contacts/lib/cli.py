@@ -8,12 +8,12 @@ import subprocess
 import sys
 from pathlib import Path
 
-VERSION = "0.1.0"
+VERSION = "0.1.1"
 LIB = Path(__file__).resolve().parent / "contacts.js"
 
 GAPS = [
     "Direct CNContactStore is not used. A command-line binary has no NSContactsUsageDescription, so macOS often will not show the Contacts privacy prompt. This CLI asks Contacts.app over Apple Events instead. The grant is Automation (Grok Bot or Terminal → Contacts), same shape as grok-notes.",
-    "Search matches name, first name, last name, organization, and nickname only. It does not search phone numbers, emails, notes, or postal addresses (that would walk every card).",
+    "Search matches name, first name, last name, organization, and nickname only. Phone and email search is refused on purpose: Contacts whose() cannot filter phones (error -2700), and walking every card is about 70ms each (several minutes for this book) and would load every number into the scripting process. search --field phone|email exits unsupported_field and does not call Contacts. show still returns phones for one id.",
     "search and groups never print phone numbers, emails, or street addresses. show does, for one card.",
     "No account picker. Contacts scripting returns the unified cards Contacts.app shows, not a per-iCloud-account split.",
     "Cannot merge, unlink, or split linked contacts. Cannot ignore Siri suggestions or the Duplicates pile.",
@@ -77,6 +77,7 @@ def emit(data, as_json, text_fn):
             "needs_force", "needs_allow_large", "unsupported", "missing_target",
             "missing_name", "missing_change", "missing_query", "ambiguous",
             "bad_request", "not_found", "already_exists", "query_too_broad",
+            "unsupported_field",
         }
         code = 2 if data.get("error") in soft else 1
         if as_json:
@@ -187,8 +188,9 @@ def build_parser():
     sp = sub.add_parser("doctor", help="Check Automation access and counts")
     add_json(sp)
 
-    sp = sub.add_parser("search", help="Find contacts by name or organization (no phone numbers)")
+    sp = sub.add_parser("search", help="Find contacts by name or organization. Phone and email are refused.")
     sp.add_argument("query")
+    sp.add_argument("--field", choices=("name", "phone", "email"), default="name")
     sp.add_argument("--limit", type=int, default=20)
     add_json(sp)
 
@@ -291,6 +293,16 @@ def main(argv=None):
         emit(data, as_json, print_groups)
         return
     if args.cmd == "search":
+        field = getattr(args, "field", "name") or "name"
+        if field in ("phone", "email"):
+            die(
+                2,
+                "unsupported_field",
+                "Phone and email search is not available. Contacts scripting cannot filter those fields "
+                "(whose() raises -2700), and scanning every card would load the whole book into the scripting "
+                "process. Pass a name, then show --id for one card. Nothing was queried.",
+                as_json,
+            )
         data = call_jxa({"op": "search", "query": args.query, "limit": args.limit}, timeout, as_json)
         emit(data, as_json, print_search)
         return

@@ -7,7 +7,7 @@ import json
 import subprocess
 import sys
 
-VERSION = "0.1.0"
+VERSION = "0.1.1"
 
 GAPS = [
     "This wraps /usr/bin/shortcuts. It can list shortcuts and folders, and run one shortcut by name. It cannot create, edit, sign, or delete a shortcut.",
@@ -127,6 +127,25 @@ def cmd_run(args):
     name = (args.name or "").strip()
     if not name:
         die(2, "missing_name", "Pass the shortcut name. Nothing was run.", as_json)
+    if args.dry_run:
+        try:
+            proc = run_shortcuts(["list"], 30)
+        except subprocess.TimeoutExpired:
+            die(4, "timeout", "shortcuts list timed out. Nothing was run.", as_json)
+        lines, err = _lines(proc)
+        if err is not None:
+            die(1, "shortcuts_error", err, as_json)
+        found = name in lines
+        data = {
+            "ok": True,
+            "dryRun": True,
+            "ran": False,
+            "name": name,
+            "installed": found,
+            "message": "dry-run: shortcut was not run.",
+        }
+        emit(data, as_json, lambda d: print(f"dry-run {d['name']!r} installed={d['installed']} (not run)"))
+        return
     if not args.force:
         die(
             2,
@@ -163,7 +182,12 @@ def cmd_run(args):
     emit(data, as_json, text)
 
 
-def cmd_gaps(_args):
+def cmd_gaps(args):
+    as_json = getattr(args, "json", False)
+    data = {"ok": True, "tool": "grok-shortcuts", "version": VERSION, "gaps": GAPS}
+    if as_json:
+        print(json.dumps(data))
+        return
     print("grok-shortcuts gaps")
     for item in GAPS:
         print(f"- {item}")
@@ -192,6 +216,7 @@ def build_parser():
     add_json(run)
     run.add_argument("name")
     run.add_argument("--force", action="store_true")
+    run.add_argument("--dry-run", action="store_true", help="Check the name is installed. Does not run it.")
     run.add_argument("--input-path", action="append")
     run.add_argument("--output-path")
     run.add_argument("--output-type")
@@ -199,6 +224,7 @@ def build_parser():
     run.set_defaults(func=cmd_run)
 
     gaps = sub.add_parser("gaps")
+    add_json(gaps)
     gaps.set_defaults(func=cmd_gaps)
     return parser
 

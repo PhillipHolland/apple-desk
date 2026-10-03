@@ -8,7 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-VERSION = "0.1.1"
+VERSION = "0.1.2"
 LIB = Path(__file__).resolve().parent / "mail.js"
 TOOL = "grok-mail"
 
@@ -266,13 +266,23 @@ def main(argv=None):
         if len(body) > DRAFT_BODY_MAX:
             die(2, "bad_request", f"draft --body is capped at {DRAFT_BODY_MAX} characters. Nothing was created.", as_json)
         if args.dry_run:
+            subject = (args.subject or "").strip()
+            if not subject:
+                die(2, "missing_subject", "draft needs --subject. Mail was not called.", as_json)
+            bad = []
+            for raw in (args.to or "").split(","):
+                addr = raw.strip()
+                if addr and "@" not in addr:
+                    bad.append(addr)
+            if bad:
+                die(2, "bad_request", "Each --to address needs an @. Mail was not called.", as_json)
             data = {
                 "ok": True,
                 "dryRun": True,
                 "wouldCreate": True,
                 "sent": False,
                 "to": args.to,
-                "subject": args.subject,
+                "subject": subject,
                 "bodyChars": len(body),
                 "message": "dry-run: Mail.app was not called. draft still needs --force to create.",
             }

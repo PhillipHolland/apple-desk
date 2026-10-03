@@ -16,14 +16,15 @@ Agent skill: see [`SKILL.md`](./SKILL.md) (also installed as the Apple Desk skil
 
 | CLI | Role |
 | --- | --- |
-| `grok-reminders` | Reminders 0.1.1 (in-house; RemCTL not a dependency; blocked on Automation Allow) |
-| `grok-notes` | Notes.app + search cache |
-| `grok-contacts` | Contacts.app |
-| `grok-messages` | Messages send (gated) + chat.db history |
-| `grok-calendar` | Calendar.app (0.1.1; blocked on Automation Allow) |
-| `grok-shortcuts` | Shortcuts list/run (`run` needs `--force`) |
-| `grok-mail` | Mail.app (0.1.1; blocked on Automation Allow; prefer Gmail connector) |
-| `grok-icloud` | iCloud Drive list/read (local only; no force-download) |
+| `grok-reminders` | Reminders 0.1.2 (in-house; dry-run add; blocked on Automation Allow) |
+| `grok-notes` | Notes.app + search cache (0.2.1, `tags --folder`) |
+| `grok-contacts` | Contacts.app 0.1.1 (phone/email search refused) |
+| `grok-messages` | Messages 0.2.1 send (gated) + chat.db history + attachment metadata |
+| `grok-calendar` | Calendar.app 0.1.2 (dry-run; blocked on Automation Allow) |
+| `grok-shortcuts` | Shortcuts 0.1.1 list/run (`run` needs `--force`; `--dry-run` does not run) |
+| `grok-mail` | Mail.app 0.1.2 (blocked on Automation Allow; prefer Gmail connector) |
+| `grok-icloud` | iCloud Drive 0.1.1 list/read/summary (no force-download) |
+| `grok-spotlight` | Scoped `mdfind` (paths only; 0.1.0) |
 
 Requires macOS Automation (and Full Disk Access for Messages history).
 

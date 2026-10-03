@@ -12,7 +12,7 @@ from pathlib import Path
 
 import index as indexlib
 
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 ROOT = Path(__file__).resolve().parent.parent
 LIB = Path(__file__).resolve().parent / "notes.js"
 
@@ -249,7 +249,8 @@ def print_status(data):
 
 
 def print_tags(data):
-    print(f"hashtags: {data.get('total')}   source: cache")
+    scope = data.get("folder") or "all folders"
+    print(f"hashtags: {data.get('total')}   source: cache   folder: {scope}")
     for t in data.get("tags") or []:
         print(f"  #{t.get('tag')}  ({t.get('count')})")
     if data.get("truncated"):
@@ -347,8 +348,9 @@ def build_parser():
     p.add_argument("--include-trash", action="store_true")
     sub.add_parser("status", parents=[parent], help="index age and counts")
     p = sub.add_parser("cache-clear", parents=[parent], help="delete the local index only")
-    p = sub.add_parser("tags", parents=[parent], help="hashtags from the index")
+    p = sub.add_parser("tags", parents=[parent], help="hashtags from the index (no Apple Event)")
     p.add_argument("--limit", type=int)
+    p.add_argument("--folder", help="Only notes in this folder name or path")
     p = sub.add_parser("create-note", parents=[parent])
     p.add_argument("--title", required=True)
     p.add_argument("--body")
@@ -454,7 +456,7 @@ def main(argv=None):
         emit(data, as_json, lambda d: print(f"removed cache files: {', '.join(d.get('removed') or []) or '(none)'}"))
         return 0
     if args.cmd == "tags":
-        data = indexlib.list_tags(args.limit or 50)
+        data = indexlib.list_tags(args.limit or 50, folder=args.folder)
         emit(data, as_json, print_tags)
         return 0
     if args.cmd == "search" and not args.live:

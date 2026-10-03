@@ -9,14 +9,14 @@ import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-VERSION = "0.1.1"
+VERSION = "0.1.2"
 LIB = Path(__file__).resolve().parent / "calendar.js"
 
 GAPS = [
     "Direct EventKit is not used. A command-line binary has no NSCalendarsUsageDescription, so macOS often will not show the Calendars privacy prompt for the binary. This CLI asks Calendar.app over Apple Events. The usual grant is Automation (Grok Bot or Grok Bot Helper → Calendar). If Calendar still refuses the data, also enable Grok Bot and Grok Bot Helper under Privacy & Security → Calendars, then quit and reopen Grok Bot.",
     "Reads are the default. create, update, and delete are the only mutations. delete removes one event and refuses without --force. There is no delete-all.",
-    "No attendees, invites, RSVP, or proposing a new time. No alarms, travel time, attachments, or availability (busy/free).",
-    "Recurrence is read-only on show (the stored rule string). This CLI does not create or edit a series, and it does not target one occurrence versus the whole series.",
+    "show returns attendeeCount and alarmCount only. It does not list attendees, send invites, RSVP, or propose a new time. It does not create alarms, set travel time, or change availability.",
+    "Recurrence on show is a small object (summary, and frequency or until when Calendar exposes them). This CLI does not create or edit a series, and it does not target one occurrence versus the whole series.",
     "Events cannot be moved between calendars. update changes fields on the event's current calendar only.",
     "Subscribed and read-only calendars (holidays, birthdays, some shared calendars) can be listed but not written.",
     "list and search stay inside a date window (list defaults to today through 7 days; search defaults to 30 days ago through 180 days ahead). They match title and location only, not notes. A calendar with more than 800 overlapping events in the window is refused.",
@@ -36,6 +36,19 @@ AUTH_HINT = (
 DOCTOR_TIMEOUT = 20
 DEFAULT_TIMEOUT = 20
 LONG_TIMEOUT = 25
+
+
+def parse_stamp(value):
+    """Offline check. YYYY-MM-DD or YYYY-MM-DD HH:MM. Does not call Calendar."""
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(raw, fmt)
+        except ValueError:
+            continue
+    return False
 
 
 def die(code, error, message, as_json):
@@ -296,11 +309,13 @@ def build_parser():
     sp.add_argument("--timed", action="store_true", help="clear all-day")
     sp.add_argument("--location")
     sp.add_argument("--notes")
+    sp.add_argument("--dry-run", action="store_true", help="Validate only; do not call Calendar.app")
     add_json(sp)
 
     sp = sub.add_parser("delete", help="Delete one event by uid")
     sp.add_argument("--uid", required=True)
     sp.add_argument("--force", action="store_true")
+    sp.add_argument("--dry-run", action="store_true", help="Do not call Calendar.app")
     add_json(sp)
 
     sp = sub.add_parser("gaps", help="What Calendar.app can do that this CLI cannot")
@@ -368,6 +383,15 @@ def main(argv=None):
             die(2, "missing_calendar", "create needs --calendar.", as_json)
         if not (args.start or "").strip():
             die(2, "bad_request", "create needs --start as YYYY-MM-DD or YYYY-MM-DD HH:MM.", as_json)
+        start_dt = parse_stamp(args.start)
+        if start_dt is False:
+            die(2, "bad_request", "start must be YYYY-MM-DD or YYYY-MM-DD HH:MM. Calendar was not called.", as_json)
+        if args.end:
+            end_dt = parse_stamp(args.end)
+            if end_dt is False:
+                die(2, "bad_request", "end must be YYYY-MM-DD or YYYY-MM-DD HH:MM. Calendar was not called.", as_json)
+            if start_dt and end_dt and end_dt < start_dt:
+                die(2, "bad_request", "end is before start. Calendar was not called.", as_json)
         if args.dry_run:
             data = {
                 "ok": True,
@@ -399,7 +423,24 @@ def main(argv=None):
     if args.cmd == "update":
         if args.all_day and args.timed:
             die(2, "bad_request", "Pass only one of --all-day and --timed.", as_json)
+        if args.start and parse_stamp(args.start) is False:
+            die(2, "bad_request", "start must be YYYY-MM-DD or YYYY-MM-DD HH:MM. Calendar was not called.", as_json)
+        if args.end and parse_stamp(args.end) is False:
+            die(2, "bad_request", "end must be YYYY-MM-DD or YYYY-MM-DD HH:MM. Calendar was not called.", as_json)
         all_day = True if args.all_day else False if args.timed else None
+        if args.dry_run:
+            data = {
+                "ok": True,
+                "dryRun": True,
+                "wouldUpdate": True,
+                "uid": args.uid,
+                "title": args.title,
+                "start": args.start,
+                "end": args.end,
+                "message": "dry-run: Calendar.app was not called.",
+            }
+            emit(data, as_json, lambda d: print(f"dry-run update {d.get('uid')} (Calendar not called)"))
+            return
         data = call_jxa({
             "op": "update",
             "uid": args.uid,
@@ -413,6 +454,16 @@ def main(argv=None):
         emit(data, as_json, print_write)
         return
     if args.cmd == "delete":
+        if args.dry_run:
+            data = {
+                "ok": True,
+                "dryRun": True,
+                "wouldDelete": True,
+                "uid": args.uid,
+                "message": "dry-run: Calendar.app was not called. A real delete still needs --force.",
+            }
+            emit(data, as_json, lambda d: print(f"dry-run delete {d.get('uid')} (Calendar not called)"))
+            return
         if not args.force:
             die(2, "needs_force", "delete refuses without --force. This removes one event by --uid. There is no mass delete and no delete-all.", as_json)
         data = call_jxa({"op": "delete", "uid": args.uid, "force": True}, LONG_TIMEOUT, as_json)
