@@ -19,13 +19,13 @@ One skill for the Mac-local CLIs. Not a cloud connector. Run every command on th
 | Reminders | `grok-reminders` | 0.1.4 | Reminders.app JavaScript. In-house, not RemCTL. Pattern credit: Federico Viticci / MacStories. RemCTL is not a dependency. Lean doctor (names only, ≤12–15s). Lists are names-only unless `--counts`. today/upcoming/search hit the local index when present (`--live` for Reminders.app). `add --dry-run` does not call Reminders |
 | Calendar | `grok-calendar` | 0.1.5 | Calendar.app JavaScript (`osascript`). Read by default. Lean doctor is count-only (no name or event walk). `list`/`search` use `~/.cache/grok-calendar` when present (`--live` plus `--index` or `--calendar` for Calendar.app). create/update/delete `--dry-run` stays offline |
 | Notes | `grok-notes` | 0.2.1 | Notes.app JavaScript (`osascript`). Search uses a local cache. `tags --folder` is cache-only |
-| Contacts | `grok-contacts` | 0.1.1 | Contacts.app JavaScript. `search --field phone or email` is refused and does not call Contacts |
+| Contacts | `grok-contacts` | 0.1.2 | Cache-first search/show from `~/.cache/grok-contacts` when the index status is ok. `--live` asks Contacts.app. Phone/email search uses the index only and does not call Contacts |
 | iMessage | `grok-messages` | 0.2.1 | Messages.app JavaScript to send. `~/Library/Messages/chat.db` read-only for history and attachment metadata. Person send rules are under Agent rules |
 | Shortcuts | `grok-shortcuts` | 0.1.2 | `/usr/bin/shortcuts`. List is safe. `run` and `create` do nothing without `--force`. `create` signs locally (`people-who-know-me`) and does not run the shortcut. `--dry-run` does not sign or run |
 | Spotlight | `grok-spotlight` | 0.1.0 | `/usr/bin/mdfind`. Paths only. Default scope is Documents and Desktop. Keychain, Messages, Mail, HomeKit, Safari, and Cookies paths are refused |
 | Focus | `grok-focus` | 0.1.1 | Best-effort read of the local Do Not Disturb database on macOS 27. Does not write it. `set` needs `--force` and an existing `--shortcut` |
 | Safari bookmarks | `grok-safari` | 0.1.1 | `~/Library/Safari/Bookmarks.plist` only. Bookmarks and Reading List. No history, passwords, edits, or URL opens |
-| Desk indexes | `grok-desk` | 0.1.3 | Local onboard + indexes under `~/.cache/grok-*` on any Mac. Notes via `grok-notes reindex`. Messages FTS from `chat.db` read-only. Contacts off unless asked. Calendar reindex default window is past 30 days through next 90 (`--past-days` / `--future-days` or `GROK_CALENDAR_PAST_DAYS` / `GROK_CALENDAR_FUTURE_DAYS`). Reminders fill when Automation is allowed |
+| Desk indexes | `grok-desk` | 0.1.4 | Local onboard + indexes under `~/.cache/grok-*` on any Mac. Notes via `grok-notes reindex`. Messages FTS from `chat.db` read-only. Contacts off unless asked. Calendar reindex default window is past 30 days through next 90 (`--past-days` / `--future-days` or `GROK_CALENDAR_PAST_DAYS` / `GROK_CALENDAR_FUTURE_DAYS`). Reminders fill when Automation is allowed |
 
 Google calendars stay on the Google Calendar connector. `grok-calendar` only sees calendars already in Calendar.app. Prefer the Gmail connector for phillip.b.holland@gmail.com cloud mail; `grok-mail` is for Mail.app on this Mac. Passwords and HomeKit are out on purpose.
 
@@ -67,6 +67,25 @@ Those project folders are not git repos yet. No sudo.
 5. If `https://github.com/viticci/notesctl` becomes a real public repo, switch Notes to that official CLI and stop treating `grok-notes` as the long-term tool. Until then, `grok-notes` is the Notes path. Club MacStories beta is not installed and must not be fetched unless the user hands over the binary
 
 
+
+## Onboarding
+
+Ask once, on a new Mac, how this bot should sign outgoing messages. Messages first. The same line applies to similar drafts (an unsent Mail draft, for example). Do not invent a footer. If they want none, leave it unset.
+
+Store one line at `~/.config/grok-desk/signature` (directory `0700`, file `0600`). It stays on this Mac. It is not committed and not uploaded.
+
+```bash
+grok-desk signature
+grok-desk signature --set "- Sent from Ada's Grok Bot"
+grok-desk signature --clear
+```
+
+An example shape is `- Sent from Phil's Grok Bot`. That line is not the product default. Use only the line this user chose.
+
+When they ask to send, read `grok-desk signature`. If a line is set and not already in the body, append it. Show the recipient and the exact text, signature included. Wait for an explicit yes. Then send that exact text. `grok-messages` does not append the line itself.
+
+Never send to a group unless they named that group. Then use `--chat-guid` only, still after yes on the exact text. `--to` stays 1:1.
+
 ## Onboard and local indexes
 
 First-run speed is a local cache under `~/.cache/grok-*`. Directories are mode `0700`. Database files are mode `0600`. Nothing is uploaded.
@@ -102,7 +121,7 @@ grok-desk gaps
 - Pass user text as CLI arguments. Do not interpolate titles, names, or message text into a hand-written AppleScript
 - After a write, verify with a single `info` / `show` / `doctor` of that object
 - Privacy: do not paste reminder bodies, note bodies, phones, emails, street addresses, handles, or message text into group chats, email, Slack, or posts unless the user just asked to share that specific item
-- Phase 4 send rules (iMessage). Draft the recipient and the exact text, show that draft, and wait for an explicit yes before any send. `send` without `--force` must not be run. `--dry-run` never sends, even with `--force`. `--to` is a person (phone, email, or a 1:1 chat) and must never target a group, even if that handle is a member of one. The CLI sends a 1:1 Messages `participant`. If the handle exists only in a group, the CLI exits `refusing_group` and prints the group name and guid. Stop there. Do not retry with `--force`, do not pick that group yourself, and do not send. A group send is allowed only when the user named that group. Then use `--chat-guid` with the guid they confirmed, still only after they said yes to the exact text. Never pass a person's handle as `--to` hoping it lands in the right thread. If the match might be wrong, dry-run first and show route, style, guid, and service, not message text. Do not create `~/.config/grok-messages/allowlist` unless they asked for one. If that file exists, targets must match a line. Do not work around a refused send with the Messages UI or another tool
+- Phase 4 send rules (iMessage). Draft the recipient and the exact text, including the saved signature from `grok-desk signature` when one is set. Show that draft, and wait for an explicit yes before any send. The CLI does not append the signature. `send` without `--force` must not be run. `--dry-run` never sends, even with `--force`. `--to` is a person (phone, email, or a 1:1 chat) and must never target a group, even if that handle is a member of one. The CLI sends a 1:1 Messages `participant`. If the handle exists only in a group, the CLI exits `refusing_group` and prints the group name and guid. Stop there. Do not retry with `--force`, do not pick that group yourself, and do not send. A group send is allowed only when the user named that group. Then use `--chat-guid` with the guid they confirmed, still only after they said yes to the exact text. Never pass a person's handle as `--to` hoping it lands in the right thread. If the match might be wrong, dry-run first and show route, style, guid, and service, not message text. Do not create `~/.config/grok-messages/allowlist` unless they asked for one. If that file exists, targets must match a line. Do not work around a refused send with the Messages UI or another tool
 - Deletes need `--force` and an id (or an exact folder/group name the user gave). Never `empty-trash` unless they explicitly asked to empty Recently Deleted. Never `delete-folder --allow-large` or `delete-group --allow-large` unless they named that container and accepted the size. Calendar delete is one `--uid` plus `--force`. Never mass-delete events
 - Exit **3** or **-1743** ("Not authorized to send Apple events"): stop. Do not loop. Tell them the Automation click for that app (Reminders, Calendar, Notes, Contacts, or Messages) under System Settings → Privacy & Security → Automation, for **Grok Bot** / **Grok Bot Helper**
 - Calendar exit **3** with `calendar_tcc`, or events still empty after Automation is on: System Settings → Privacy & Security → Calendars → enable **Grok Bot** and **Grok Bot Helper**, then quit and reopen Grok Bot. One change, then `grok-calendar doctor` once
@@ -114,7 +133,7 @@ grok-desk gaps
 
 ## Capability matrix
 
-Checked 2026-10-03. Notes, contacts, and messages doctors were ok around 12:45 PM CT. Calendar doctor ~12:58 PM CT and reminders doctor later that afternoon both exited 4. Do not rerun either until Phillip is back. Shortcuts list worked (35). No shortcut was run.
+Checked 2026-10-03. Prod doctors are count-only or names-only. When Automation is already allowed they should finish in a few seconds. A later pass that afternoon exited 0 for notes, contacts, messages, reminders, calendar, shortcuts, icloud, and desk. Exit 4 still means stop. Do not loop. Shortcuts list worked (35). No shortcut was run or created.
 
 | Human can | This skill can | Cannot (do not fake it) |
 | --- | --- | --- |
@@ -201,7 +220,7 @@ grok-shortcuts gaps
 ```bash
 grok-contacts doctor --json
 grok-contacts groups --json               # list is an alias
-grok-contacts search "Name" --limit 20 --json
+grok-contacts search "Name" --limit 20 --json   # cache-first; add --live for Contacts.app
 grok-contacts show --id CONTACTID --json
 grok-contacts create --first "Ada" --last "Lovelace" --phone "mobile:555-0100" --email "work:ada@example.com"
 grok-contacts update --id CONTACTID --org "Analytical Engines"
@@ -214,7 +233,7 @@ grok-contacts delete-group "Engineers" --force
 
 ### Phase 4 — Messages send
 
-Draft first. Show who (1:1 handle, or the group name plus guid) and the exact text. Wait for the user to say yes. Then:
+Draft first. Show who (1:1 handle, or the group name plus guid) and the exact text, including the saved signature when one is set. Wait for the user to say yes. Then:
 
 ```bash
 grok-messages doctor --json
@@ -292,7 +311,7 @@ Safari reads Bookmarks.plist only. Do not open the URLs, do not edit bookmarks, 
 ## Demo (safe)
 
 1. `grok-reminders lists` or `today` once doctor is green. Do not paste reminder titles into a shared channel. If doctor exits 4, stop
-2. Skip `grok-calendar doctor` until Phillip says the Automation dialog is handled (it already exited 4). Then list today or a short window. Titles and times only. No delete demo
+2. `grok-calendar doctor` once. If it exits 4, stop. Then list today or a short window. Titles and times only. No delete demo
 3. `grok-notes doctor --json` then `grok-notes search "<query they asked>" --json`. `show` only an id they named
 4. `grok-contacts doctor --json` then `groups` or a narrow `search`. Do not `show` phones unless they asked for that card
 5. `grok-messages doctor --json` then `chats --limit 5`. Do not `recent` unless they named the chat. Send demo is `--dry-run` only
@@ -303,11 +322,11 @@ Safari reads Bookmarks.plist only. Do not open the URLs, do not edit bookmarks, 
 - Automation: System Settings → Privacy & Security → Automation → Grok Bot (and Grok Bot Helper) → Reminders, Calendar, Notes, Contacts, or Messages
 - Calendar data, if Automation is on but events still fail: System Settings → Privacy & Security → Calendars → Grok Bot and Grok Bot Helper, then quit and reopen Grok Bot
 - Messages history: System Settings → Privacy & Security → Full Disk Access → Grok Bot and Grok Bot Helper, then quit and reopen Grok Bot
-- Reminders: Automation for Grok Bot / Grok Bot Helper → Reminders. Not the RemCTL Capability Host. A dialog may already be up from the 2026-10-03 doctor timeout. Do not prompt again until Phillip is back
+- Reminders: Automation for Grok Bot / Grok Bot Helper → Reminders. Not the RemCTL Capability Host. If an Allow dialog is already up, do not prompt again until it is answered
 
 ## Connector rank
 
-Extra Apple connectors, highest feasibility first. Voice Memos and anything voice-related are out. Calendar is built but its doctor is blocked. Shortcuts list works.
+Extra Apple connectors, highest feasibility first. Voice Memos and anything voice-related are out. Calendar and Shortcuts are built. Calendar doctor is count-only. Shortcuts list works. Run and create need `--force`.
 
 1. **Calendar** — built. `grok-calendar` via Calendar.app JXA. Automation, plus Calendars privacy if event data is still blocked. Ops: read, search, create, update, delete one. Fits the existing Automation click. Not the same grant as Reminders.
 2. **Shortcuts** — built. `grok-shortcuts` 0.1.2 lists folders, can run, and can create. `create --force` signs locally (a Comment action, optional Show Result, or `--from` an existing file). It does not run the shortcut and does not notarize through iCloud. `run` needs `--force` because a shortcut can change other apps. `--dry-run` does not run or sign. Editing an existing shortcut's actions is not realistic.
@@ -321,7 +340,7 @@ Extra Apple connectors, highest feasibility first. Voice Memos and anything voic
 8. **HomeKit** — separate Home permission. Controlling accessories is a safety boundary. Do not touch.
 9. **Passwords** — Keychain and Passwords. Do not touch.
 
-Last verified on the office Mac, 2026-10-03: macOS 27.0, Notes 4.13, Contacts 14.0, Messages 26.0. Notes, contacts, and messages doctors were ok earlier. `grok-messages` 0.2.0: a person target that only matches a group returns `refusing_group`. A fixture and 35 real handles that also sit in groups resolved to a 1:1 or a refusal. No message was sent. `grok-calendar` doctor ~12:58 PM CT exited 4. `grok-reminders` 0.1.1 is installed (timeouts capped 20–25s); its first doctor timed out (exit 4) and was not retried. `grok-shortcuts` 0.1.0 listed 35 shortcuts; `run` without `--force` exited 2. Snapshot: `~/Developer/AUDIT.md` on that Mac.
+Last verified on the office Mac, 2026-10-03: macOS 27.0, Notes 4.13, Contacts 14.0, Messages 26.0. That computer is verification only. Prod doctors that afternoon exited 0: notes 0.2.1 (~0.3s), contacts 0.1.1 (~1.0s), messages 0.2.1 (~0.2s), reminders 0.1.4 (~1.2s), calendar 0.1.5 (~0.3s), shortcuts 0.1.2 (~0.2s, 35 shortcuts, nothing run or created), icloud 0.1.1 (~0.2s), desk (~0.7s before 0.1.4). `grok-messages` 0.2.1: a person target that only matches a group returns `refusing_group`. A fixture and 35 real handles that also sit in groups resolved to a 1:1 or a refusal. No message was sent. `run` and `create` without `--force` exit 2. Snapshot: `docs/AUDIT.md` (may predate this doctor pass).
 
 `grok-mail` 0.1.2: draft `--dry-run` checks subject and `@` and does not call Mail. Earlier doctor exit 4 was not retried. Draft without --force exits needs_force.
 

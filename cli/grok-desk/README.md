@@ -1,6 +1,6 @@
 # grok-desk
 
-Local onboarding for Apple Desk. Version 0.1.3.
+Local onboarding for Apple Desk. Version 0.1.4.
 
 Builds search caches on this Mac so later lookups do not walk Notes or `chat.db` from scratch. Nothing is uploaded. No Keychain. No Passwords.
 
@@ -36,3 +36,15 @@ Messages may store group chat metadata (guid, display name, counts). That does n
 Onboard's short doctor loop does not call Calendar, Reminders, or Mail, because an Automation dialog can hang. Filling Calendar or Reminders happens in `reindex`, one attempt each. Mail is not indexed.
 
 `grok-focus` and `grok-safari` are reported by `doctor` when they exist. They are not indexed here.
+
+## Signature
+
+Optional one-line footer for the agent. Not appended by any send CLI. Not uploaded.
+
+```bash
+grok-desk signature
+grok-desk signature --set "- Sent from Ada's Grok Bot"
+grok-desk signature --clear
+```
+
+File: `~/.config/grok-desk/signature` (mode `0600`). One line, 160 characters max. Ask the user what they want. Do not invent a line. `doctor` reports set or unset and does not print the line.

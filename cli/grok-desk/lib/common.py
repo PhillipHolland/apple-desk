@@ -7,7 +7,7 @@ import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-VERSION = "0.1.3"
+VERSION = "0.1.4"
 TOOL = "grok-desk"
 APPLE = datetime(2001, 1, 1, tzinfo=timezone.utc)
 
@@ -147,3 +147,51 @@ def version_of(path: str) -> str | None:
     if not text:
         return None
     return text.splitlines()[0][:120]
+
+
+SIGNATURE_MAX = 160
+
+
+def config_dir() -> Path:
+    return Path.home() / ".config" / "grok-desk"
+
+
+def signature_path() -> Path:
+    return config_dir() / "signature"
+
+
+def read_signature() -> str | None:
+    """One stored line, or None when missing or unreadable."""
+    path = signature_path()
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    line = raw.strip()
+    if not line or any(ch < " " or ch == "\x7f" for ch in line):
+        return None
+    if len(line) > SIGNATURE_MAX:
+        return None
+    return line
+
+
+def write_signature(text: str) -> str:
+    line = (text or "").strip()
+    if not line or any(ord(ch) < 32 or ord(ch) == 127 for ch in line) or len(line) > SIGNATURE_MAX:
+        raise ValueError(
+            "Signature must be one line, 1..%d characters, with no control characters." % SIGNATURE_MAX
+        )
+    folder = config_dir()
+    secure_dir(folder)
+    path = signature_path()
+    path.write_text(line + "\n", encoding="utf-8")
+    os.chmod(path, 0o600)
+    return line
+
+
+def clear_signature() -> None:
+    path = signature_path()
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return

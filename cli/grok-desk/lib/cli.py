@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""grok-desk 0.1.3 — onboard a Mac and build local search indexes.
+"""grok-desk 0.1.4 — onboard a Mac and build local search indexes.
 
 Caches stay under ~/.cache (0700 dirs, 0600 databases). Nothing is uploaded.
 No Keychain. No Passwords. Mail is not called. Calendar and Reminders are
@@ -40,6 +40,7 @@ GAPS = [
     "Calendar reindex runs grok-calendar doctor once. When that is authorized it stores calendar names and events in a portable window: past 30 days through the next 90 days (override with --past-days/--future-days or GROK_CALENDAR_PAST_DAYS and GROK_CALENDAR_FUTURE_DAYS, each 0..366). One calendar index at a time (uid, title, start, end, all-day, calendar name). Only the Apple system calendar titled Scheduled Reminders is skipped by name. A wide window that times out is read in 14-day slices, and each slice is retried once. A slice over 800 events is split further by date. Doctor timeout or denied Automation sets pending_allow and is not retried. Locations and notes are not stored. grok-calendar list/search and grok-desk search read this cache first.",
     "Reminders reindex runs a names-only doctor, lean lists, then one incomplete-only collect (id, list, title, due). Notes are not stored. Timeout or denied Automation sets pending_allow and is not retried. Mail is not indexed. Focus and Safari are probed by doctor and are not part of this index.",
     "Keychain, Passwords, and HomeKit are out on purpose.",
+    "An optional one-line signature lives in ~/.config/grok-desk/signature. grok-desk does not send messages and does not append that line.",
 ]
 
 
@@ -77,6 +78,13 @@ def emit(data: dict, as_json: bool) -> None:
                 f"  {row.get('name')}: rows={row.get('rows')} status={row.get('status')} "
                 f"bytes={row.get('bytes')} indexed={row.get('indexedAt')}"
             )
+    sig = data.get("signature")
+    if isinstance(sig, dict) and "signature" not in sig:
+        print("  signature: " + ("set" if sig.get("set") else "unset"))
+    elif isinstance(sig, dict) and sig.get("set") and sig.get("signature"):
+        print(sig["signature"])
+    elif isinstance(sig, dict):
+        print("signature: unset")
 
 
 def probe_tools() -> list[dict]:
@@ -467,6 +475,11 @@ def build_parser() -> argparse.ArgumentParser:
     search.add_argument("query")
     search.add_argument("--limit", type=int, default=20)
     add_json(search)
+
+    signature = sub.add_parser("signature", help="Show or set the one-line outgoing signature")
+    signature.add_argument("--set", dest="set_text", default=None, help="Store one line. Does not send anything.")
+    signature.add_argument("--clear", action="store_true", help="Remove the stored line")
+    add_json(signature)
     return parser
 
 
@@ -479,7 +492,14 @@ def main(argv=None) -> int:
         return 2
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     if args.cmd == "doctor":
-        data = {"ok": True, "tool": common.TOOL, "version": VERSION, "tools": probe_tools(), "caches": probe_caches()}
+        data = {
+            "ok": True,
+            "tool": common.TOOL,
+            "version": VERSION,
+            "tools": probe_tools(),
+            "caches": probe_caches(),
+            "signature": {"set": common.read_signature() is not None, "path": str(common.signature_path())},
+        }
         emit(data, as_json)
         return 0
     if args.cmd == "gaps":
@@ -487,7 +507,13 @@ def main(argv=None) -> int:
         emit(data, as_json)
         return 0
     if args.cmd == "status":
-        data = {"ok": True, "tool": common.TOOL, "version": VERSION, "summary": status_rows()}
+        data = {
+            "ok": True,
+            "tool": common.TOOL,
+            "version": VERSION,
+            "summary": status_rows(),
+            "signatureSet": common.read_signature() is not None,
+        }
         emit(data, as_json)
         return 0
     if args.cmd == "reindex":
@@ -502,6 +528,38 @@ def main(argv=None) -> int:
         data = do_search(args.surface, args.query, args.limit)
         emit(data, as_json)
         return 0 if data.get("ok") else 1
+    if args.cmd == "signature":
+        if args.clear and args.set_text is not None:
+            die(2, "bad_request", "Pass either --set or --clear, not both.", as_json)
+        if args.clear:
+            common.clear_signature()
+            data = {"ok": True, "tool": common.TOOL, "version": VERSION, "signature": {"set": False, "path": str(common.signature_path())}}
+            emit(data, as_json)
+            return 0
+        if args.set_text is not None:
+            try:
+                line = common.write_signature(args.set_text)
+            except ValueError as exc:
+                die(2, "bad_signature", str(exc), as_json)
+            data = {
+                "ok": True,
+                "tool": common.TOOL,
+                "version": VERSION,
+                "signature": {"set": True, "signature": line, "path": str(common.signature_path())},
+            }
+            emit(data, as_json)
+            return 0
+        line = common.read_signature()
+        if line is None:
+            die(2, "unset", 'No signature stored. Ask the user, then grok-desk signature --set "...".', as_json)
+        data = {
+            "ok": True,
+            "tool": common.TOOL,
+            "version": VERSION,
+            "signature": {"set": True, "signature": line, "path": str(common.signature_path())},
+        }
+        emit(data, as_json)
+        return 0
     parser.print_help()
     return 2
 

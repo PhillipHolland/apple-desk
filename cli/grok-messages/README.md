@@ -21,7 +21,7 @@ Add `--json` on any command except `gaps`. `chats` lists handles and counts, not
 
 `--to` is a person only (phone, email, or a 1:1 chat name). It never selects a group chat, including a group that merely contains that handle. The send uses a Messages `participant` (one-to-one). If the handle exists only in a group, send exits with `refusing_group` and prints that group's name and guid. Nothing is sent. To message a group on purpose, pass `--chat-guid` with the exact guid. Do not pass both `--to` and `--chat-guid`.
 
-Agents must draft the recipient and the exact text and wait for an explicit yes before `--force`. Never send to a group unless the user named that group.
+Agents must draft the recipient and the exact text and wait for an explicit yes before `--force`. Never send to a group unless the user named that group. If `grok-desk signature` is set, that line is part of the exact text. This CLI does not append it.
 
 If `~/.config/grok-messages/allowlist` exists, the target must be listed (one phone, email, display name, or chat guid per line). An empty allowlist blocks every send.
 
