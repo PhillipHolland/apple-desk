@@ -164,15 +164,38 @@ Security: paths only, limit 50, timeout 15s default. No file bytes.
 
 This is the AFK spike chosen over Safari bookmarks (that plist is privacy-heavy) and Focus status (the Do Not Disturb database is a separate TCC story).
 
+Those two deferrals are done as read-only 0.1.0 spikes: `grok-focus` (best-effort Do Not Disturb database, no write) and `grok-safari` (Bookmarks.plist only). See below.
+
+
+### grok-focus (new 0.1.0)
+
+Commands: `doctor`, `status`, `set` (`--dry-run`, or `--force` plus `--shortcut`), `gaps`.
+
+Feasibility: `~/Library/DoNotDisturb/DB/Assertions.json` and `ModeConfigurations.json` were readable on this Mac with no new dialog. Doctor on macOS 27.0 saw 5 configured modes and no active assertion (`active: false`). `ModeConfigurationsSecure.json` (per-app allow lists) is not read.
+
+Security: status is best-effort and this Mac only. `set` without `--force` exits `needs_force`. `--dry-run` never runs a shortcut's action (`shortcuts list` only when `--shortcut` is passed). `--force` without `--shortcut` exits `needs_shortcut` and does not write the database. `--force --shortcut NAME` runs that existing shortcut and can do whatever the shortcut does.
+
+Top gaps: no supported Focus API; stale or cross-device status; no silent setter; Sleep and Driving are names only.
+
+### grok-safari (new 0.1.0)
+
+Commands: `doctor`, `bookmarks`, `reading-list`, `search`, `gaps`. All list commands take `--limit` (1–50) and `--json`.
+
+Feasibility: `~/Library/Safari/Bookmarks.plist` was readable (Full Disk Access already effective for this process). Doctor counted 996 bookmarks and 79 Reading List items. History, cookies, passwords, and CloudTabs were not opened.
+
+Security: no writes, no `open` of URLs, no System Settings UI. Output is clipped by `--limit`. Reading List preview text is omitted.
+
+Top gaps: iCloud sync lag; no add/delete; no history search; folder label mapping is only Favorites and Bookmarks Menu.
+
 ## Missing surfaces (Mac + iOS 27 continuity)
 
 | Surface | Feasibility | TCC / prompt | Recommendation |
 | --- | --- | --- | --- |
 | Spotlight | easy | none for user folders | **built** (`grok-spotlight`) |
 | Shortcuts as the meta layer | easy | none to list; a run can do anything | **built**, run stays gated |
-| Focus | medium | Shortcuts the user wrote, or a Do Not Disturb database that may need FDA | defer. Do not read the DND database AFK |
+| Focus | medium | Local Do Not Disturb database, readable here without a new dialog | **built** (`grok-focus` 0.1.0, best-effort, no database write) |
 | Notification Center | hard | no honest AppleScript for the stack | defer |
-| Safari Reading List / Bookmarks | medium | Bookmarks.plist often needs Full Disk Access; contents are private | defer. Not this spike |
+| Safari Reading List / Bookmarks | medium | Bookmarks.plist; FDA already effective here | **built** (`grok-safari` 0.1.0, read-only, no history) |
 | Maps | hard | MapKit search is not a local CLI; AppleScript is thin | defer |
 | Find My | don't | location of people and devices | never from this desk |
 | Screen Time | don't | family controls, no stable CLI | never |
@@ -209,3 +232,4 @@ iOS 27 continuity that is already covered when the Mac is signed into the same i
 3. After Reminders doctor is green, `show` one id and confirm `remindMeDate`.
 4. After Mail doctor is green, `list` one mailbox and confirm junk/replied. Still no send.
 5. Optional later: a Contacts phone index only if Phillip asks, stored 0600, never printed in bulk.
+6. Focus and Safari read-only spikes are in. Do not re-run Calendar, Reminders, or Mail doctors until the Automation Allows. Do not enable Focus and do not send Mail or Messages from this work.

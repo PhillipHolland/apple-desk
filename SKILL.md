@@ -2,10 +2,11 @@
 name: Apple Desk
 description: >-
   Use when the user wants Apple Reminders, Calendar, Notes, Contacts,
-  iMessage, Shortcuts, Apple Mail, iCloud Drive, or a scoped Spotlight
-  search on their Mac: look up, organize, or draft.
+  iMessage, Shortcuts, Apple Mail, iCloud Drive, a scoped Spotlight
+  search, Focus status, or Safari bookmarks on their Mac: look up, organize, or draft.
   One skill for grok-reminders, grok-calendar, grok-notes, grok-contacts,
-  grok-messages, grok-shortcuts, grok-mail, grok-icloud, and grok-spotlight.
+  grok-messages, grok-shortcuts, grok-mail, grok-icloud, grok-spotlight,
+  grok-focus, and grok-safari.
   Not Google Calendar, not Passwords, not HomeKit, not cloud Apple APIs.
 ---
 # Apple Desk
@@ -21,13 +22,15 @@ One skill for the Mac-local CLIs. Not a cloud connector. Run every command on th
 | iMessage | `grok-messages` | 0.2.1 | Messages.app JavaScript to send. `~/Library/Messages/chat.db` read-only for history and attachment metadata. Person send rules are under Agent rules |
 | Shortcuts | `grok-shortcuts` | 0.1.1 | `/usr/bin/shortcuts`. List is safe. `run` does nothing without `--force`. `--dry-run` only checks the name |
 | Spotlight | `grok-spotlight` | 0.1.0 | `/usr/bin/mdfind`. Paths only. Default scope is Documents and Desktop. Keychain, Messages, Mail, HomeKit, Safari, and Cookies paths are refused |
+| Focus | `grok-focus` | 0.1.0 | Best-effort read of the local Do Not Disturb database on macOS 27. Does not write it. `set` needs `--force` and an existing `--shortcut` |
+| Safari bookmarks | `grok-safari` | 0.1.0 | `~/Library/Safari/Bookmarks.plist` only. Bookmarks and Reading List. No history, passwords, edits, or URL opens |
 
 Google calendars stay on the Google Calendar connector. `grok-calendar` only sees calendars already in Calendar.app. Prefer the Gmail connector for phillip.b.holland@gmail.com cloud mail; `grok-mail` is for Mail.app on this Mac. Passwords and HomeKit are out on purpose.
 
 ## When not to use
 
 - No registered Mac, or the Mac is offline
-- Safari, Photos, Freeform, Journal, FaceTime, or iCloud.com until that connector exists
+- Safari history, passwords, cookies, or iCloud.com. Bookmarks and Reading List are `grok-safari` only. Photos, Freeform, Journal, FaceTime stay out
 - Passwords, Keychain, or HomeKit. Do not probe them
 - Raw `sqlite3` against NoteStore, AddressBook, or `chat.db`. Use the CLIs. Do not copy those databases off the Mac
 - PyPI / GitHub `jwmoss/notesctl`. That is a different NoteStore exporter. Do not install it and do not name our binary `notesctl`
@@ -45,6 +48,8 @@ Google calendars stay on the Google Calendar connector. `grok-calendar` only see
 - `~/bin/grok-mail` → `~/Developer/grok-mail` (also `~/.local/bin`)
 - `~/bin/grok-icloud` → `~/Developer/grok-icloud` (also `~/.local/bin`)
 - `~/bin/grok-spotlight` → `~/Developer/grok-spotlight` (also `~/.local/bin`)
+- `~/bin/grok-focus` → `~/Developer/grok-focus` (also `~/.local/bin`)
+- `~/bin/grok-safari` → `~/Developer/grok-safari` (also `~/.local/bin`)
 
 `~/bin/remctl` may still be on disk. Do not call it.
 
@@ -87,6 +92,8 @@ Checked 2026-10-03. Notes, contacts, and messages doctors were ok around 12:45 P
 | Contacts cards and groups | Counts, group names, search by name or organization, show one card, create/update/delete, labeled phone/email/url, group membership | Search by phone, email, or street (`search --field phone or email` exits `unsupported_field` and does not call Contacts). Merge or unlink. Photos, posters, Memoji. Smart lists, Medical ID, emergency contacts, vCard import/export. Group membership on `show` is skipped above 80 groups |
 | Messages inbox, threads, send | Primary chat list, recent text in one named chat, text search, dry-run, plain-text 1:1 send via a Messages participant. Group send only with `--chat-guid` after the user named that group. `attachments` lists metadata for one chat (name, mime, bytes) | Sending `--to` a handle into a group that merely contains them. New chat, new group, sending or opening an attachment, tapbacks, stickers, effects, edit, unsend, reply, pin, mute, mark read. History for chats missing from the scripting list (often unknown senders). Attachment-only rows (null text). iCloud.com |
 | Files on this Mac | `grok-spotlight search` returns paths under Documents and Desktop, or a folder you pass with `--onlyin` | File contents. Keychains, Messages, Mail, HomeKit, Passes, Safari, Cookies. Whole-disk search |
+| Focus on this Mac | `grok-focus status` (best-effort: on/off and configured mode names) | Turning Focus on without `--force` and a shortcut the user already has. Writing the Do Not Disturb database. Notification Center. Assuming another device matches this Mac |
+| Safari bookmarks and Reading List | `grok-safari bookmarks`, `reading-list`, and `search` from Bookmarks.plist, clipped by `--limit` | History, cookies, passwords, open tabs, editing bookmarks, opening URLs |
 
 `grok-reminders gaps`, `grok-calendar gaps`, `grok-notes gaps`, `grok-contacts gaps`, `grok-messages gaps`, and `grok-shortcuts gaps` print the same limits. Trust those if they disagree with this table.
 
@@ -223,6 +230,25 @@ grok-spotlight gaps --json
 
 Spotlight returns paths, not file contents. Default scope is `~/Documents` and `~/Desktop`. Do not point `--onlyin` at Keychains, Messages, Mail, HomeKit, Safari, or Cookies; the CLI refuses those.
 
+```bash
+grok-focus doctor --json
+grok-focus status --json
+grok-focus set --mode "Do Not Disturb" --dry-run
+grok-focus gaps --json
+```
+
+Focus status is best-effort on macOS 27 (local Do Not Disturb assertions only). Do not `set` without the user asking to change Focus. `--dry-run` never changes it. `--force` still requires `--shortcut` of an existing shortcut and does not write the database. Do not paste configured mode details into a shared channel unless they asked.
+
+```bash
+grok-safari doctor --json
+grok-safari bookmarks --json --limit 20
+grok-safari reading-list --json --limit 20
+grok-safari search "query" --json --limit 20
+grok-safari gaps --json
+```
+
+Safari reads Bookmarks.plist only. Do not open the URLs, do not edit bookmarks, and do not dump a full bookmark list into a shared channel. If doctor says `needs_full_disk_access`, stop. Do not open System Settings.
+
 ## Demo (safe)
 
 1. `grok-reminders lists` or `today` once doctor is green. Do not paste reminder titles into a shared channel. If doctor exits 4, stop
@@ -246,6 +272,8 @@ Extra Apple connectors, highest feasibility first. Voice Memos and anything voic
 1. **Calendar** — built. `grok-calendar` via Calendar.app JXA. Automation, plus Calendars privacy if event data is still blocked. Ops: read, search, create, update, delete one. Fits the existing Automation click. Not the same grant as Reminders.
 2. **Shortcuts** — built. `grok-shortcuts` 0.1.1 lists folders and can run. No Full Disk Access. `run` needs `--force` because a shortcut can change other apps. `--dry-run` does not run. Editing shortcut contents is not realistic. 35 shortcuts were listed earlier on 2026-10-03. None were run this pass.
 3. **Spotlight** — built. `grok-spotlight` 0.1.0. Paths only. No new TCC for Documents, Desktop, or Developer.
+3b. **Focus** — built read-only. `grok-focus` 0.1.0. Best-effort on macOS 27. Do not enable Focus unless the user asked and passed a shortcut.
+3c. **Safari bookmarks** — built read-only. `grok-safari` 0.1.0. Bookmarks.plist only. No history.
 4. **Mail** — built as spike. `grok-mail` 0.1.2: read/list/search/show + gated draft. No send. Hard 20–25s timeouts + body clip 800. Doctor timed out 2026-10-03 (~1:13 PM CT, exit 4). Do not retry until Allow. Prefer Gmail connector for cloud Gmail.
 5. **Freeform** — Freeform.app scripting can open a board. Search and layout edits inside a board are mostly unsupported. Not built.
 6. **Journal** — Journal.app has almost no AppleScript. The local store is TCC-walled. Do not scrape it. Not built.
@@ -257,4 +285,4 @@ Last verified on the office Mac, 2026-10-03: macOS 27.0, Notes 4.13, Contacts 14
 
 `grok-mail` 0.1.2: draft `--dry-run` checks subject and `@` and does not call Mail. Earlier doctor exit 4 was not retried. Draft without --force exits needs_force.
 
-Scope map: `docs/SCOPE_AUDIT.md` in the private apple-desk repo. `grok-spotlight` 0.1.0 is the AFK spike. Focus, Safari bookmarks, Find My, Wallet, Journal, Photos, Voice Memos, and Keychain stay out.
+Scope map: `docs/SCOPE_AUDIT.md` in the private apple-desk repo. `grok-focus` 0.1.0 and `grok-safari` 0.1.0 are read-only AFK spikes. Find My, Wallet, Journal, Photos, Voice Memos, Safari history, and Keychain stay out.

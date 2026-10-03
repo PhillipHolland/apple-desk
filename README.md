@@ -25,6 +25,8 @@ Agent skill: see [`SKILL.md`](./SKILL.md) (also installed as the Apple Desk skil
 | `grok-mail` | Mail.app 0.1.2 (blocked on Automation Allow; prefer Gmail connector) |
 | `grok-icloud` | iCloud Drive 0.1.1 list/read/summary (no force-download) |
 | `grok-spotlight` | Scoped `mdfind` (paths only; 0.1.0) |
+| `grok-focus` | Focus status 0.1.0 (best-effort; set needs `--force` and a shortcut) |
+| `grok-safari` | Safari bookmarks + Reading List 0.1.0 (read-only plist) |
 
 Requires macOS Automation (and Full Disk Access for Messages history).
 

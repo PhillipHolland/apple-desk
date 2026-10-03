@@ -13,10 +13,12 @@ Updated 2026-10-03 about 1:40 PM CT. Measured doctors for Notes, Contacts, and M
 - Shortcuts 0.1.1: `run` needs `--force`; `--dry-run` only checks that the name is installed
 - iCloud 0.1.1: CloudDocs only; `summary` counts local bytes and evicted files; no download
 - Spotlight 0.1.0: paths only, Documents/Desktop by default; Keychains, Messages, Mail, HomeKit, Passes, Safari, Cookies refused
+- Focus 0.1.0: best-effort status from the local Do Not Disturb database on macOS 27. `set` without `--force` refuses. `--force` still needs an existing `--shortcut` and does not write the database. No doctor loop.
+- Safari 0.1.0: bookmarks and Reading List from Bookmarks.plist only. No history, passwords, cookies, edits, or URL opens. Unreadable plist exits `needs_full_disk_access` without opening System Settings.
 
 ## Deliberately not built
 
-Focus database, Notification Center, Safari bookmarks, Maps, Find My, Screen Time, Continuity Camera, AirDrop, Freeform, Journal, Photos, Voice Memos, Weather store, Clock alarms, System Settings toggles, widgets, Lock Screen, Control Center, Stage Manager, Handoff, Universal Clipboard, iCloud Keychain, Wallet, HomeKit.
+Notification Center, Maps, Find My, Screen Time, Continuity Camera, AirDrop, Freeform, Journal, Photos, Voice Memos, Weather store, Clock alarms, System Settings toggles, widgets, Lock Screen, Control Center, Stage Manager, Handoff, Universal Clipboard, iCloud Keychain, Wallet, HomeKit.
 
 ## When Phillip is back
 
