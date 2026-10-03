@@ -1,0 +1,12 @@
+#!/bin/bash
+# grok-calendar — Apple Calendar CLI (Calendar.app JXA).
+# Not a cloud calendar API. Not Passwords. Not HomeKit.
+set -u
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR=$(cd -P "$(dirname "$SOURCE")" && pwd)
+  SOURCE=$(readlink "$SOURCE")
+  [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+ROOT=$(cd -P "$(dirname "$SOURCE")/.." && pwd)
+exec python3 "$ROOT/lib/cli.py" "$@"
