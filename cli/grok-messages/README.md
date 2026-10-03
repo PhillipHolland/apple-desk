@@ -19,7 +19,7 @@ grok-messages send --chat-guid "iMessage;+;chat..." --text "hello" --dry-run
 
 Add `--json` on any command except `gaps`. `unread` counts incoming rows with `is_read = 0`. It does not return message text, does not mark anything read, and does not call Messages.app. A chat title is the display name, or a name from `~/.cache/grok-contacts` when that index exists. `chats` lists handles and counts, not message text. `recent` and `search` return message text for the chat or query you named. `search` snippets are short. Deletes do not exist.
 
-`mark-read` does nothing unless `--force` is present. It does not write `chat.db`, send, type, or press Return. With `--all --force` it activates Messages so the open conversation is seen, then clicks Conversation → Mark All as Read when that menu item is enabled. `--to` or `--chat-guid` clicks Mark as Read only when that exact item is enabled. This needs Automation for Messages and Accessibility for System Events. The iPhone badge has to be confirmed on the phone.
+`mark-read` does nothing unless `--force` is present. It does not write `chat.db`, send, type, or press Return. With `--all --force` it brings Messages frontmost, waits until Conversation → Mark All as Read is enabled, and clicks that item. Bringing Messages forward without that click is not success. `--to` or `--chat-guid` clicks Mark as Read only when that exact item is enabled. This needs Automation for Messages and Accessibility for System Events. The iPhone badge has to be confirmed on the phone.
 
 `send` does nothing unless `--force` is present. `--dry-run` resolves the target and does not send, even together with `--force`.
 

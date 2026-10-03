@@ -1,5 +1,5 @@
 // Messages UI only. Never sends, never types, never presses Return.
-// Clicks only Conversation > "Mark All as Read" or "Mark as Read", and only if enabled.
+// Success is a click on an enabled Conversation menu item. Activate alone is not success.
 function run(argv) {
   var raw = "";
   for (var i = 0; i < argv.length; i++) {
@@ -11,66 +11,146 @@ function run(argv) {
   var payload;
   try { payload = JSON.parse(raw || "{}"); }
   catch (e) {
-    return JSON.stringify({ok: false, error: "bad_request", message: "invalid JSON argv", sent: false});
+    return JSON.stringify({ok: false, error: "bad_request", message: "invalid JSON argv", sent: false, clicked: false});
   }
   var op = payload.op;
   var itemName = null;
   if (op === "mark_all") itemName = "Mark All as Read";
   else if (op === "mark_front") itemName = "Mark as Read";
   else {
-    return JSON.stringify({ok: false, error: "bad_request", message: "unsupported ui op", sent: false});
+    return JSON.stringify({ok: false, error: "bad_request", message: "unsupported ui op", sent: false, clicked: false});
   }
 
-  var Messages = Application("Messages");
-  Messages.activate();
-  delay(0.7);
+  ObjC.import("AppKit");
+  var se = Application("System Events");
+
+  function frontName() {
+    try {
+      var procs = se.processes.whose({frontmost: true});
+      if (procs.length > 0) return String(procs[0].name());
+    } catch (e) {}
+    return "";
+  }
+
+  function objcCount(obj) {
+    if (!obj) return 0;
+    try {
+      if (typeof obj.count === "function") return Number(obj.count());
+    } catch (e) {}
+    var c = obj.count;
+    var n = Number(c);
+    return isNaN(n) ? 0 : n;
+  }
+
+  function bringFront() {
+    var bundle = "com.apple.MobileSMS";
+    var running = $.NSRunningApplication.runningApplicationsWithBundleIdentifier(bundle);
+    if (objcCount(running) === 0) {
+      var cfg = $.NSWorkspaceOpenConfiguration.configuration;
+      cfg.setActivates(true);
+      $.NSWorkspace.sharedWorkspace.openApplicationAtURL_configuration_completionHandler(
+        $.NSURL.fileURLWithPath("/System/Applications/Messages.app"),
+        cfg,
+        null
+      );
+      delay(0.4);
+      running = $.NSRunningApplication.runningApplicationsWithBundleIdentifier(bundle);
+    }
+    if (objcCount(running) > 0) {
+      var app = running.objectAtIndex(0);
+      try { app.unhide(); } catch (e1) {}
+      // All windows, and do not let another app keep focus.
+      app.activateWithOptions(3);
+    }
+    try { Application("Messages").activate(); } catch (e2) {}
+    try { se.processes.byName("Messages").frontmost = true; } catch (e3) {}
+  }
+
+  var front = "";
+  var becameFront = false;
+  for (var i = 0; i < 12; i++) {
+    bringFront();
+    delay(0.35);
+    front = frontName();
+    if (front === "Messages") {
+      becameFront = true;
+      break;
+    }
+  }
 
   var result = {
-    ok: true,
+    ok: false,
     sent: false,
+    wroteDatabase: false,
     activated: true,
+    frontmost: becameFront,
+    frontApp: front,
     menu: "Conversation",
     item: itemName,
     menuFound: false,
     menuEnabled: false,
     clicked: false,
-    action: "activate"
+    attempts: 0
   };
 
-  var se = Application("System Events");
-  var proc = se.processes.byName("Messages");
-  var found = null;
-  try {
+  if (!becameFront) {
+    result.error = "not_frontmost";
+    result.message = "Messages did not become the frontmost app (frontmost was " + (front || "unknown") + "). The menu was not clicked.";
+    return JSON.stringify(result);
+  }
+
+  function findItem() {
+    var proc = se.processes.byName("Messages");
     var barItem = proc.menuBars[0].menuBarItems.byName("Conversation");
+    try { barItem.click(); } catch (e) {}
+    delay(0.2);
     var items = barItem.menus[0].menuItems;
     var n = items.length;
     for (var j = 0; j < n; j++) {
       var nm = "";
       try { nm = String(items[j].name()); } catch (e2) { nm = ""; }
-      if (nm === itemName) {
-        found = items[j];
-        break;
-      }
+      if (nm === itemName) return items[j];
     }
-  } catch (e3) {
-    result.menuError = String(e3);
+    return null;
+  }
+
+  var found = null;
+  var enabled = false;
+  for (var k = 0; k < 8; k++) {
+    result.attempts = k + 1;
+    if (frontName() !== "Messages") bringFront();
+    try {
+      found = findItem();
+    } catch (e3) {
+      result.menuError = String(e3);
+      found = null;
+    }
+    if (found) {
+      result.menuFound = true;
+      try { enabled = !!found.enabled(); } catch (e4) { enabled = false; }
+      result.menuEnabled = enabled;
+      if (enabled) break;
+    }
+    delay(0.45);
   }
 
   if (!found) {
-    result.message = "Activated Messages so the open conversation is seen. Menu item " + itemName + " was not found, so it was not clicked.";
+    result.error = "menu_missing";
+    result.message = "Messages was frontmost, but Conversation > " + itemName + " was not found. Nothing was clicked.";
     return JSON.stringify(result);
   }
-  result.menuFound = true;
-  try { result.menuEnabled = !!found.enabled(); }
-  catch (e4) { result.menuEnabled = false; }
+  if (!enabled) {
+    result.error = "menu_disabled";
+    result.message = "Messages was frontmost, but " + itemName + " stayed disabled. It was not clicked.";
+    return JSON.stringify(result);
+  }
 
-  if (!result.menuEnabled) {
-    result.message = "Activated Messages so the open conversation is seen. " + itemName + " was disabled, so it was not clicked.";
-    return JSON.stringify(result);
-  }
   found.click();
   result.clicked = true;
+  result.menuEnabled = true;
+  result.ok = true;
   result.action = "Conversation > " + itemName;
-  result.message = "Clicked Conversation > " + itemName + ". Nothing was sent.";
+  result.frontApp = frontName();
+  result.message = "Clicked enabled Conversation > " + itemName + ". Nothing was sent.";
   return JSON.stringify(result);
 }

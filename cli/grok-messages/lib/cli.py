@@ -10,7 +10,7 @@ from pathlib import Path
 
 import db
 
-VERSION = "0.2.5"
+VERSION = "0.2.6"
 LIB = Path(__file__).resolve().parent / "messages.js"
 ALLOWLIST = Path.home() / ".config" / "grok-messages" / "allowlist"
 MAX_TEXT = 4000
@@ -20,7 +20,7 @@ GAPS = [
     "Send only works for a chat currently in the Messages scripting list. Unknown-sender and junk chats are often absent there, so history can show them while send returns not_in_messages_ui. Nothing is sent in that case.",
     "send --to is a person only (phone, email, or a 1:1 chat). It never targets a group, even when that handle is a member of one. The send uses Messages' participant object (1:1). If the handle exists only in a group, send refuses and names that group's guid. Group sends require --chat-guid, which the user must name on purpose. This CLI does not create groups.",
     "attachments lists metadata for one chat (name, mime, bytes, sticker, date). It does not download, open, or copy the file, and it does not return the absolute path. Send still cannot attach a file. No tapbacks, stickers-as-send, message effects, edits, unsends, or replies. Send is plain text only, capped at 4000 characters.",
-    "No pin, mute, hide alerts, or Focus filter changes. mark-read does not write chat.db and does not use IMCore. With --force it activates Messages and clicks Conversation > Mark All as Read only when that menu item is enabled. It does not send.",
+    "No pin, mute, hide alerts, or Focus filter changes. mark-read does not write chat.db and does not use IMCore. With --force it makes Messages frontmost, then clicks an enabled Conversation > Mark All as Read. Activate alone is not success. It does not send.",
     "Search looks at the message text column only. Attachment-only rows and a few attributed-body-only rows have null text and will not match. Snippets are capped.",
     "Reactions are labeled (love, like, dislike, laugh, emphasize, question, emoji) from the row itself. The message that was reacted to is not pulled in.",
     "An optional allowlist file (~/.config/grok-messages/allowlist) restricts send targets if it exists. One handle or chat guid per line. If the file exists and has no targets, every send is refused. If the file does not exist, --force is the only gate.",
@@ -89,7 +89,8 @@ def emit(data, as_json, text_fn):
             "needs_force", "unsupported", "missing_target", "missing_text",
             "ambiguous", "bad_request", "not_found", "query_too_broad",
             "not_in_messages_ui", "allowlist_blocked", "text_too_long",
-            "refusing_group", "both_targets",
+            "refusing_group", "both_targets", "not_frontmost", "menu_disabled",
+            "menu_missing", "menu_not_clicked",
         }
         code = 2 if data.get("error") in soft else 1
         if data.get("error") == "needs_full_disk_access":
@@ -206,7 +207,7 @@ def cmd_doctor(args):
             print(f"allowlist: on ({al['count']} targets)  {al['path']}")
         else:
             print("allowlist: off (send still needs --force)")
-        print("writes: send only with --force. mark-read --force drives Messages (activate, then Mark All as Read if enabled). No chat.db write.")
+        print("writes: send only with --force. mark-read --force clicks enabled Conversation > Mark All as Read after Messages is frontmost. No chat.db write.")
         print("send --to is 1:1 participant only; a group needs --chat-guid")
 
     emit(data, as_json, text)
@@ -581,9 +582,10 @@ def cmd_unread(args):
 UI_LIB = Path(__file__).resolve().parent / "mark_ui.js"
 MARK_READ_HELP = (
     "Drives the Messages app. It does not write chat.db, send, type, or press Return, and it does not use IMCore or change SIP. "
-    "With --force, it activates Messages so the open conversation is seen (that is what cleared the Mac Dock badge in testing), "
-    "then clicks Conversation > Mark All as Read when that menu item is enabled. "
-    "--all is the collective menu. --to / --chat-guid only clicks Mark as Read, and only if that exact item is enabled. "
+    "Without --force, Messages is not activated and no menu is clicked. "
+    "With --all --force, Messages is brought frontmost, then Conversation > Mark All as Read is clicked only after that item is enabled. "
+    "Activate alone is not success. If the item never enables, the command exits non-zero and does not claim a click. "
+    "--to / --chat-guid clicks Mark as Read only when that exact item is enabled. "
     "Needs Automation for Messages and Accessibility for System Events. "
     "The iPhone badge has to be confirmed on the phone."
 )
@@ -656,8 +658,13 @@ def cmd_mark_read(args):
         payload = {"op": "mark_front"}
     else:
         payload = {"op": "mark_all"}
-    data = call_mark_ui(payload, 25, as_json)
-    if not data.get("ok", False):
+    data = call_mark_ui(payload, 45, as_json)
+    data["sent"] = False
+    data["wroteDatabase"] = False
+    if not (data.get("ok") and data.get("clicked") and data.get("menuEnabled") and data.get("frontmost")):
+        data["ok"] = False
+        data.setdefault("error", "menu_not_clicked")
+        data.setdefault("message", "Did not click an enabled menu item. Nothing was sent.")
         emit(data, as_json, lambda d: None)
     data["sent"] = False
     data["wroteDatabase"] = False
