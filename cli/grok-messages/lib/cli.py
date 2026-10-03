@@ -83,6 +83,13 @@ def call_jxa(payload, timeout, as_json):
     return data
 
 
+def call_send_jxa(payload, timeout, as_json):
+    """Send through Messages scripting only; never activate or drive UI."""
+    if payload.get("op") not in {"send_participant", "send_chat"}:
+        die(2, "bad_request", "Internal send route is not a supported Messages send operation. Nothing was sent.", as_json)
+    return call_jxa(payload, timeout, as_json)
+
+
 def emit(data, as_json, text_fn):
     if not data.get("ok", False):
         soft = {
@@ -485,7 +492,7 @@ def cmd_send(args):
         return
 
     if route == "participant":
-        result = call_jxa({
+        result = call_send_jxa({
             "op": "send_participant",
             "handle": handle,
             "service": chat.get("service"),
@@ -493,7 +500,7 @@ def cmd_send(args):
             "text": text,
         }, 45, as_json)
     else:
-        result = call_jxa({"op": "send_chat", "chatId": chat["guid"], "text": text}, 45, as_json)
+        result = call_send_jxa({"op": "send_chat", "chatId": chat["guid"], "text": text}, 45, as_json)
     if not result.get("ok"):
         emit(result, as_json, lambda d: None)
     data = {
@@ -736,7 +743,7 @@ def build_parser():
         "send",
         help="Send plain text. --to is 1:1 only. Groups need --chat-guid.",
         description=(
-            "Send plain text through Messages.app. Nothing is sent unless --force is set. "
+            "Send plain text through Messages.app's non-UI scripting path. It never activates Messages, clicks menus, waits for a frontmost window, or uses mark-read's screen_locked guard. Nothing is sent unless --force is set. "
             "--dry-run never sends, even with --force. "
             "--to is a person (phone, email, or the name of an existing 1:1 chat) and must never "
             "select a group, even when that handle is a member of one. The send goes to a Messages "
