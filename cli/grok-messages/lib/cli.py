@@ -10,7 +10,7 @@ from pathlib import Path
 
 import db
 
-VERSION = "0.2.6"
+VERSION = "0.2.7"
 LIB = Path(__file__).resolve().parent / "messages.js"
 ALLOWLIST = Path.home() / ".config" / "grok-messages" / "allowlist"
 MAX_TEXT = 4000
@@ -587,6 +587,8 @@ MARK_READ_HELP = (
     "Activate alone is not success. If the item never enables, the command exits non-zero and does not claim a click. "
     "--to / --chat-guid clicks Mark as Read only when that exact item is enabled. "
     "Needs Automation for Messages and Accessibility for System Events. "
+    "If loginwindow is frontmost or the screensaver is running, it exits before activation with a clear locked-screen error; unread, doctor, and other non-UI commands are not blocked. "
+    "The separate send command uses Messages scripting's send operation, is independently gated, and was not tested under the lock; mark-read never invokes it. "
     "The iPhone badge has to be confirmed on the phone."
 )
 

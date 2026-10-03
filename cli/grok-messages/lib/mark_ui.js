@@ -22,6 +22,7 @@ function run(argv) {
   }
 
   ObjC.import("AppKit");
+  ObjC.import("CoreGraphics");
   var se = Application("System Events");
 
   function frontName() {
@@ -40,6 +41,58 @@ function run(argv) {
     var c = obj.count;
     var n = Number(c);
     return isNaN(n) ? 0 : n;
+  }
+
+  function lockState() {
+    var front = frontName();
+    var frontLower = String(front || "").toLowerCase();
+    var loginWindowFront = frontLower === "loginwindow" || frontLower === "login window";
+    var sessionLocked = false;
+    try {
+      var session = ObjC.deepUnwrap($.CGSessionCopyCurrentDictionary());
+      sessionLocked = !!(session && (session.CGSSessionScreenIsLocked === true || session.CGSSessionScreenIsLocked === 1));
+    } catch (e0) {}
+    var screenSaverRunning = false;
+    try {
+      var processes = se.processes();
+      var n = processes.length;
+      for (var i = 0; i < n; i++) {
+        var name = "";
+        try { name = String(processes[i].name()); } catch (e) { name = ""; }
+        if (/screensaver|screen saver/i.test(name)) {
+          screenSaverRunning = true;
+          break;
+        }
+      }
+    } catch (e2) {}
+    return {
+      locked: loginWindowFront || sessionLocked || screenSaverRunning,
+      frontApp: front || "unknown",
+      reason: loginWindowFront ? "loginwindow" : (sessionLocked ? "locked_session" : (screenSaverRunning ? "screensaver" : ""))
+    };
+  }
+
+  // Do this before any activation/open call. loginwindow is a normal background
+  // process on macOS, so only a frontmost loginwindow means the session is locked.
+  var state = lockState();
+  if (state.locked) {
+    return JSON.stringify({
+      ok: false,
+      error: "screen_locked",
+      message: "This UI action needs Messages in front, but the screen is locked or the screensaver is running (frontmost: " + state.frontApp + "). Unread, doctors, and other non-UI Apple Desk commands are not blocked. Unlock/sign in and retry when Messages can be in front.",
+      sent: false,
+      wroteDatabase: false,
+      activated: false,
+      frontmost: false,
+      frontApp: state.frontApp,
+      lockReason: state.reason,
+      menu: "Conversation",
+      item: itemName,
+      menuFound: false,
+      menuEnabled: false,
+      clicked: false,
+      attempts: 0
+    });
   }
 
   function bringFront() {
