@@ -24,6 +24,7 @@ function run(argv) {
 function dispatch(app, payload) {
   var op = payload.op;
   if (op === "doctor") return doctor(app);
+  if (op === "peopleCount") return peopleCount(app);
   if (op === "groups") return groups(app, payload.limit || 200);
   if (op === "search") return search(app, payload);
   if (op === "show") return show(app, payload);
@@ -38,25 +39,41 @@ function dispatch(app, payload) {
 }
 
 function doctor(app) {
-  var hasMe = false;
-  try {
-    var me = app.myCard();
-    hasMe = !!(me && me.id && me.id());
-  } catch (e) {
-    hasMe = false;
-  }
+  // Count and group names only. people.length and myCard() walk the book and
+  // time out on a large library. People count comes from the local index.
   var appId = null;
   try { appId = app.id(); } catch (e2) { appId = "com.apple.AddressBook"; }
+  var groupCount = null;
+  try { groupCount = app.groups.length; } catch (e3) { groupCount = null; }
+  var groupNames = [];
+  if (groupCount !== null && groupCount > 0 && groupCount <= 80) {
+    try {
+      var names = asList(app.groups.name());
+      var cap = Math.min(names.length, 40);
+      for (var i = 0; i < cap; i++) groupNames.push(names[i]);
+    } catch (e4) {
+      groupNames = [];
+    }
+  }
   return {
     ok: true,
     automation: "authorized",
     backend: "contacts-app-jxa",
     readOnly: false,
+    source: "live",
     contactsApp: { version: String(app.version()), id: appId },
-    people: app.people.length,
-    groups: app.groups.length,
-    hasMeCard: hasMe
+    people: null,
+    groups: groupCount,
+    groupNames: groupNames,
+    hasMeCard: null,
+    note: "Doctor checks Contacts version plus group count and names. It does not walk people or open the Me card."
   };
+}
+
+function peopleCount(app) {
+  var n = null;
+  try { n = app.people.length; } catch (e) { n = null; }
+  return { ok: true, people: n, source: "live" };
 }
 
 function groups(app, limit) {
@@ -75,12 +92,29 @@ function groups(app, limit) {
   return { ok: true, count: n, truncated: n > cap, groups: rows };
 }
 
+function matchSpec(app, q) {
+  // One property per whose(). A big _or of case variants walks the book and times out.
+  var spec = app.people.whose({ name: { _contains: q } });
+  if (spec.length === 0) spec = app.people.whose({ organization: { _contains: q } });
+  if (spec.length === 0) spec = app.people.whose({ nickname: { _contains: q } });
+  if (spec.length === 0) {
+    var parts = q.split(/\s+/);
+    if (parts.length >= 2) {
+      spec = app.people.whose({ _and: [
+        { firstName: { _contains: parts[0] } },
+        { lastName: { _contains: parts[parts.length - 1] } }
+      ] });
+    }
+  }
+  return spec;
+}
+
 function search(app, payload) {
   var q = String(payload.query || "").trim();
   if (q.length < 2) {
     return { ok: false, error: "missing_query", message: "Search needs at least 2 characters." };
   }
-  var spec = app.people.whose({ _or: orClauses(q) });
+  var spec = matchSpec(app, q);
   var n = spec.length;
   if (n > 200) {
     return {
@@ -131,7 +165,7 @@ function show(app, payload) {
   } else {
     var q = String(payload.query || "").trim();
     if (!q) return { ok: false, error: "missing_target", message: "Pass a name or --id." };
-    var spec = app.people.whose({ _or: orClauses(q) });
+    var spec = matchSpec(app, q);
     var n = spec.length;
     if (n === 0) return { ok: false, error: "not_found", message: "No contact matched." };
     if (n > 1) {

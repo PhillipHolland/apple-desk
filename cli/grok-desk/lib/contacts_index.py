@@ -152,6 +152,7 @@ def build() -> dict:
             "schema": SCHEMA,
             "indexed_at": indexed_at,
             "opt_in": "1",
+            "status": "ok",
             "stores": str(len(stores)),
         }.items():
             con.execute("INSERT INTO meta(key, value) VALUES(?, ?)", (key, value))
