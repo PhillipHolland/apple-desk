@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""grok-desk 0.1.4 — onboard a Mac and build local search indexes.
+"""grok-desk 0.1.5 — onboard a Mac and build local search indexes.
 
 Caches stay under ~/.cache (0700 dirs, 0600 databases). Nothing is uploaded.
 No Keychain. No Passwords. Mail is not called. Calendar and Reminders are
@@ -63,6 +63,17 @@ def emit(data: dict, as_json: bool) -> None:
     for tool in data.get("tools") or []:
         mark = "yes" if tool.get("present") else "no"
         print(f"  {tool['name']}: {mark}  {tool.get('version') or ''}")
+    for doc in data.get("doctors") or []:
+        checked = doc.get("checked") or "-"
+        if doc.get("present") is False:
+            mark = "missing"
+        elif checked == "doctor":
+            mark = "ok" if doc.get("ok") else (doc.get("error") or "fail")
+        elif checked == "version":
+            mark = "version"
+        else:
+            mark = checked
+        print(f"  doctor {doc.get('name')}: {mark}  {doc.get('version') or ''}")
     for cache in data.get("caches") or []:
         print(
             f"  cache {cache['name']}: exists={cache.get('exists')} bytes={cache.get('bytes', 0)} {cache.get('path', '')}"
@@ -296,6 +307,56 @@ def safe_doctors() -> list[dict]:
     return results
 
 
+def unified_status_doctors() -> list[dict]:
+    """Lean probes for `grok-desk status`. No prompts. Bounded timeouts.
+
+    SAFE_DOCTORS run at 5s. Calendar and Reminders use their own lean doctors at 8s
+    (count-only; not a full event walk). Mail stays version-only — Mail.app doctor can hang.
+    """
+    results = safe_doctors()
+    by_name = {row.get("name"): row for row in results}
+    # Upgrade calendar/reminders from version-only to lean doctor when the CLI exists.
+    for name, timeout in (("grok-calendar", 8), ("grok-reminders", 8)):
+        short = name.removeprefix("grok-")
+        path = common.which(name)
+        if not path:
+            by_name[short] = {"name": short, "present": False, "checked": "missing"}
+            continue
+        version = common.version_of(path)
+        doctor = common.run_cmd([path, "doctor", "--json"], timeout)
+        entry = {"name": short, "present": True, "checked": "doctor", "version": version, "ok": doctor.get("ok")}
+        if doctor.get("error") == "timeout":
+            entry["ok"] = False
+            entry["error"] = "timeout"
+            entry["message"] = f"doctor exceeded {timeout}s and was not retried"
+        elif (doctor.get("stdout") or "").startswith("{"):
+            try:
+                data = json.loads(doctor["stdout"])
+            except json.JSONDecodeError:
+                data = {}
+            entry["ok"] = bool(data.get("ok", doctor.get("ok")))
+            if data.get("error"):
+                entry["error"] = data.get("error")
+            if data.get("code"):
+                entry["code"] = data.get("code")
+            # Portable counts only — never dump event/reminder titles here.
+            for key in ("calendars", "lists", "appVersion", "version"):
+                if key in data and key not in entry:
+                    entry[key] = data[key]
+        elif not doctor.get("ok"):
+            entry["error"] = "doctor_failed"
+            entry["code"] = doctor.get("code")
+        by_name[short] = entry
+    # Stable order matching common.TOOLS
+    ordered = []
+    for name in common.TOOLS:
+        short = name.removeprefix("grok-")
+        if short in by_name:
+            ordered.append(by_name.pop(short))
+    ordered.extend(by_name.values())
+    return ordered
+
+
 def do_onboard(full: bool, index_contacts: bool) -> dict:
     links = [common.link_if_needed(name) for name in ("grok-desk",) + common.TOOLS]
     doctors = safe_doctors()
@@ -464,7 +525,7 @@ def build_parser() -> argparse.ArgumentParser:
     reindex.add_argument("--future-days", type=int, default=None, help="Calendar window after today (default 90, or GROK_CALENDAR_FUTURE_DAYS)")
     add_json(reindex)
 
-    status = sub.add_parser("status", help="Cache paths, counts, timestamps, size")
+    status = sub.add_parser("status", help="Unified caches + lean doctor probes across CLIs")
     add_json(status)
 
     gaps = sub.add_parser("gaps", help="What this tool will not do")
@@ -507,11 +568,22 @@ def main(argv=None) -> int:
         emit(data, as_json)
         return 0
     if args.cmd == "status":
+        # Unified rollup: local caches + lean doctor/version probes (apple-tools-style status).
+        # Focus/Safari are doctor-only shell-outs; Passwords/HomeKit stay out.
+        doctors = unified_status_doctors()
+        summary = status_rows()
+        ok = True
+        for row in doctors:
+            if row.get("present") is False:
+                ok = False
+            if row.get("checked") == "doctor" and row.get("ok") is False:
+                ok = False
         data = {
-            "ok": True,
+            "ok": ok,
             "tool": common.TOOL,
             "version": VERSION,
-            "summary": status_rows(),
+            "summary": summary,
+            "doctors": doctors,
             "signatureSet": common.read_signature() is not None,
         }
         emit(data, as_json)

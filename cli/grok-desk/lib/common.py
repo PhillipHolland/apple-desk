@@ -7,7 +7,7 @@ import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-VERSION = "0.1.4"
+VERSION = "0.1.5"
 TOOL = "grok-desk"
 APPLE = datetime(2001, 1, 1, tzinfo=timezone.utc)
 
