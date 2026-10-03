@@ -2,7 +2,7 @@
 
 Mac-local Apple ecosystem tools for Grok Bot / agents, plus a planned single MCP server.
 
-**Status:** private WIP. Keep this repo private until release.
+**Status:** public at https://github.com/PhillipHolland/apple-desk.
 
 Agent skill: see [`SKILL.md`](./SKILL.md) (also installed as the Apple Desk skill in Grok Bot).
 
@@ -26,13 +26,13 @@ grok-desk onboard --guided
 | `grok-reminders` | Reminders 0.1.4 (in-house; dry-run add; names-only doctor) |
 | `grok-notes` | Notes.app + search cache (0.2.1, `tags --folder`) |
 | `grok-contacts` | Contacts.app 0.1.2 (cache-first search/show; `--live` for Contacts.app) |
-| `grok-messages` | Messages 0.2.2 send (gated) + chat.db history, unread counts, attachment metadata |
-| `grok-calendar` | Calendar.app 0.1.6 (count-only doctor; cache-first list/search) |
+| `grok-messages` | Messages 0.2.7 (shipped mark-read, history, unread, gated send) |
+| `grok-calendar` | Calendar.app 0.1.5 (count-only doctor; cache-first list/search) |
 | `grok-shortcuts` | Shortcuts 0.1.2 list/run/create (`run` and `create` need `--force`) |
 | `grok-mail` | Mail.app 0.1.2 (blocked on Automation Allow; prefer Gmail connector) |
 | `grok-icloud` | iCloud Drive 0.1.1 list/read/summary (no force-download) |
 | `grok-spotlight` | Scoped `mdfind` (paths only; 0.1.0) |
-| `grok-desk` | Onboarding and local indexes (0.1.4). Contacts cache off by default. Optional one-line signature |
+| `grok-desk` | Onboarding and local indexes (0.1.7). Contacts cache off by default. Optional one-line signature |
 | `grok-focus` | Focus status 0.1.1 (best-effort; set needs `--force` and a shortcut) |
 | `grok-safari` | Safari bookmarks + Reading List 0.1.1 (read-only plist) |
 

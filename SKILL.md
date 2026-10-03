@@ -23,7 +23,7 @@ cd ~/Developer/apple-desk
 ./scripts/onboard.sh
 ```
 
-No sudo. Symlinks land in `~/bin` and `~/.local/bin`. Details: `docs/INSTALL.md` in the repo. Use that exact GitHub URL (public-shaped even if the repo is still private).
+No sudo. Symlinks land in `~/bin` and `~/.local/bin`. Details: `docs/INSTALL.md` in the repo. Clone URL is the public repo: https://github.com/PhillipHolland/apple-desk.
 
 Private on the Mac only: `~/.cache/grok-*`, `~/.config/grok-desk/signature`. Never commit or upload them. Never copy `chat.db`.
 
@@ -37,7 +37,7 @@ grok-desk onboard --guided
 
 Order: Full Disk Access (Messages history) → Automation Messages → Notes → Contacts → Calendar → Reminders → Shortcuts → optional Mail/iCloud → **ask** signature → reindex.
 
-On failure the CLI prints the exact **System Settings** path. Stop on exit **3** / **-1743**. Do not loop doctors while AFK. Screen lock does not block non-UI commands. Full walk: `docs/ONBOARD.md`.
+On failure the CLI prints the exact **System Settings** path. Use the recovery card below. Do not loop doctors while AFK. Full walk: `docs/ONBOARD.md`.
 
 Ask once how outgoing messages should be signed. Store with `grok-desk signature --set "…"`, or leave unset. **No product default. Never bake a person's line into the skill or docs.**
 
@@ -47,15 +47,35 @@ grok-desk signature --set "- Sent from <Name>'s Grok Bot"
 grok-desk signature --clear
 ```
 
+## First win (after the minimum gate only)
+
+- `grok-messages unread` (Full Disk Access + Messages automation)
+- `grok-notes search` (Notes automation)
+- `grok-reminders today` (Reminders automation)
+
+## Recovery
+
+| Signal | Action |
+| --- | --- |
+| 3, -1743 | Stop and open the Settings path. No loop. |
+| 4 | Stop for one Allow click. |
+| 5 | Full Disk Access. |
+| -1712 | Quit and relaunch Messages once, then one send, then stop. |
+| screen_locked | Unlock, then one retry. Never loop. |
+
 ## Consent and Messages send
 
 - Draft recipient + **exact** text (append the signature line yourself if `grok-desk signature` is set). Wait for an explicit yes. Then `grok-messages send --force`. The CLI does not append the signature.
 - **1:1 send** is Messages **participant** only. No `activate`, no menus. `--to` never targets a group.
 - **Group send** only with `--chat-guid` after the user named that group.
-- Exit **4** / **-1712** on send: quit and relaunch Messages **once**, one send, then stop. No send loops.
+- Send failures use the recovery card: **4** stops for one Allow click; **-1712** quits and relaunches Messages once, then one send, then stop.
 - Do not write `chat.db`. Read-only confirm of one outgoing row is ok after an approved send.
 - `mark-read` is the only UI path; it exits `screen_locked` before activate when locked.
 - Deletes and other writes need `--force` and an id the user named.
+
+## Tapbacks v1 (not implemented)
+
+`grok-messages react` is design-only. Dry-run prints the chat id, a likely last-message snippet, the reaction, and the exact command `imsg react --chat-id <rowid> --reaction <love|like|dislike|laugh|emphasis|question>`. `--force` runs that once. Wrap the `imsg` binary that implements `react` (source checkout `~/Developer/vendor/imsg`). Do not brew-install. Do not copy AppleScript. Do not call `imsg tapback`, `imsg launch`, or IMCore. `imsg react` hits the last-or-selected message, not a GUID. 1:1 only; v1 may refuse groups. No `chat.db` writes. Missing `imsg react` is a clean error, not an AppleScript fallback. `screen_locked` fails before UI.
 
 ## When not to use
 
