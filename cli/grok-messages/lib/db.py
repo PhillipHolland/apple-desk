@@ -269,8 +269,8 @@ def resolve_person_for_send(con, target: str, service: str | None) -> dict:
     if groups:
         return {"kind": "group_only", "groups": groups, "matches": [], "chat": None, "handle": None, "reason": "handle"}
 
-    folded = target.casefold()
-    name_hits = by_service([c for c in rows if (c["name"] or "").casefold() == folded])
+    folded = target.strip().casefold()
+    name_hits = by_service([c for c in rows if (c["name"] or "").strip().casefold() == folded])
     directs, groups = split(name_hits)
     if directs:
         return direct_result(directs)
@@ -309,8 +309,8 @@ def resolve_chat(con, target: str, service: str | None) -> tuple[dict | None, li
     if len(ident_hits) > 1:
         return _prefer(ident_hits)
 
-    folded = target.casefold()
-    name_hits = [c for c in rows if (c["name"] or "").casefold() == folded]
+    folded = target.strip().casefold()
+    name_hits = [c for c in rows if (c["name"] or "").strip().casefold() == folded]
     name_hits = by_service(name_hits)
     if len(name_hits) == 1:
         return name_hits[0], []

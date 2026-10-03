@@ -316,8 +316,9 @@ def _chat_public(chat: dict) -> dict:
 def _group_brief(groups: list[dict]) -> list[dict]:
     out = []
     for chat in groups[:20]:
+        name = (chat.get("name") or "").strip() or None
         out.append({
-            "name": chat.get("name"),
+            "name": name,
             "identifier": chat.get("identifier"),
             "guid": chat.get("guid"),
             "service": chat.get("service"),
@@ -329,7 +330,7 @@ def _group_brief(groups: list[dict]) -> list[dict]:
 def _group_only_message(target: str, groups: list[dict]) -> str:
     bits = []
     for chat in groups[:8]:
-        label = chat.get("name") or chat.get("identifier") or "(unnamed group)"
+        label = (chat.get("name") or "").strip() or chat.get("identifier") or "(unnamed group)"
         bits.append(f"{label} ({chat.get('guid')})")
     listed = "; ".join(bits) if bits else "(no guid)"
     extra = ""

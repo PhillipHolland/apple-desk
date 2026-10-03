@@ -67,23 +67,27 @@ function run(argv) {
   }
 
   function findParticipants(handle, service) {
+    // Account.participants has no Cocoa key in the Messages sdef and throws -10000.
+    // The application participant list is the supported 1:1 buddy list.
     var out = [];
-    var accounts;
-    try { accounts = Messages.accounts; }
+    var parts;
+    try { parts = Messages.participants; }
     catch (e) { return out; }
-    var n = accounts.length;
+    var n = 0;
+    try { n = parts.length; }
+    catch (e2) { return out; }
     for (var i = 0; i < n; i++) {
-      var account = accounts[i];
-      var st = serviceName(account);
-      if (!matchesService(st, service)) continue;
-      var parts;
-      try { parts = account.participants; }
-      catch (e2) { continue; }
-      var pn = parts.length;
-      for (var j = 0; j < pn; j++) {
-        var rec = participantRecord(parts[j], st);
-        if (sameHandle(rec.handle, handle)) out.push(rec);
-      }
+      try {
+        var participant = parts[i];
+        var rec = participantRecord(participant, "");
+        if (!sameHandle(rec.handle, handle)) continue;
+        var st = "";
+        try { st = serviceName(participant.account()); }
+        catch (e3) { st = ""; }
+        rec.service = st;
+        if (!matchesService(st, service)) continue;
+        out.push(rec);
+      } catch (e4) {}
     }
     return out;
   }
