@@ -1,0 +1,11 @@
+#!/bin/bash
+# grok-icloud — list what is already local in iCloud Drive. Does not download.
+set -u
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR=$(cd -P "$(dirname "$SOURCE")" && pwd)
+  SOURCE=$(readlink "$SOURCE")
+  [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+ROOT=$(cd -P "$(dirname "$SOURCE")/.." && pwd)
+exec python3 "$ROOT/lib/cli.py" "$@"

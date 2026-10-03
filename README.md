@@ -23,6 +23,7 @@ Agent skill: see [`SKILL.md`](./SKILL.md) (also installed as the Apple Desk skil
 | `grok-calendar` | Calendar.app |
 | `grok-shortcuts` | Shortcuts list/run (`run` needs `--force`) |
 | `grok-mail` | Mail.app (spike / WIP) |
+| `grok-icloud` | iCloud Drive list/read (local only; no force-download) |
 
 Requires macOS Automation (and Full Disk Access for Messages history).
 
