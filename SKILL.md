@@ -4,7 +4,7 @@ description: >-
   Use when the user wants Apple Reminders, Calendar, Notes, Contacts,
   iMessage, Shortcuts, or Apple Mail on their Mac: look up, organize, or draft.
   One skill for grok-reminders, grok-calendar, grok-notes, grok-contacts,
-  grok-messages, grok-shortcuts, and grok-mail.
+  grok-messages, grok-shortcuts, grok-mail, and grok-icloud.
   Not Google Calendar, not Passwords, not HomeKit, not cloud Apple APIs.
 ---
 # Apple Desk
@@ -41,6 +41,7 @@ Google calendars stay on the Google Calendar connector. `grok-calendar` only see
 - `~/bin/grok-calendar` → `~/Developer/grok-calendar` (also `~/.local/bin`)
 - `~/bin/grok-shortcuts` → `~/Developer/grok-shortcuts` (also `~/.local/bin`)
 - `~/bin/grok-mail` → `~/Developer/grok-mail` (also `~/.local/bin`)
+- `~/bin/grok-icloud` → `~/Developer/grok-icloud` (also `~/.local/bin`)
 
 `~/bin/remctl` may still be on disk. Do not call it.
 
@@ -191,6 +192,18 @@ grok-mail gaps
 ```
 
 `doctor` may exit 4 if Automation Allow is pending — do not retry while AFK. Prefer Gmail connector for cloud Gmail. `draft` without `--force` must not create anything. There is no `send` in 0.1.0. Do not paste full message bodies into shared channels.
+
+
+```bash
+grok-icloud doctor --json
+grok-icloud ls --json --limit 50
+grok-icloud tree --depth 1 --json
+grok-icloud find "*.pdf" --limit 20 --json
+grok-icloud cat "path/to/file.txt"
+grok-icloud gaps
+```
+
+CloudDocs only (`~/Library/Mobile Documents/com~apple~CloudDocs`). Evicted files report `evicted` and are not downloaded. No `--download`. Prefer Google Drive connector for Drive files.
 
 ## Demo (safe)
 
