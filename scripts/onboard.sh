@@ -33,4 +33,5 @@ if [[ -x "$HOME/bin/grok-desk" ]]; then
 else
   echo "grok-desk is not linked yet. Install cli/grok-desk, then re-run."
 fi
+echo "For one-gate Mac permissions (bots): grok-desk onboard --guided"
 echo "Do not commit caches or chat.db."

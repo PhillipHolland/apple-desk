@@ -7,7 +7,7 @@ import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-VERSION = "0.1.5"
+VERSION = "0.1.7"
 TOOL = "grok-desk"
 APPLE = datetime(2001, 1, 1, tzinfo=timezone.utc)
 
@@ -85,7 +85,18 @@ def dir_bytes(path: Path) -> int:
     return total
 
 
+def bundled(name: str) -> str | None:
+    """CLI that ships beside grok-desk in this tree. Prefer it over a stale PATH link."""
+    sibling = Path(__file__).resolve().parents[2] / name / "bin" / name
+    if sibling.is_file() and os.access(sibling, os.X_OK):
+        return str(sibling)
+    return None
+
+
 def which(name: str) -> str | None:
+    found = bundled(name)
+    if found:
+        return found
     found = shutil.which(name)
     if found:
         return found
@@ -97,10 +108,11 @@ def which(name: str) -> str | None:
 
 
 def tool_sources(name: str) -> list[Path]:
+    """Prefer the apple-desk checkout; fall back to a sibling ~/Developer/grok-* tree."""
     home = Path.home()
     return [
-        home / "Developer" / name / "bin" / name,
         home / "Developer" / "apple-desk" / "cli" / name / "bin" / name,
+        home / "Developer" / name / "bin" / name,
     ]
 
 
@@ -124,7 +136,7 @@ def link_if_needed(name: str) -> dict:
     return {"name": name, "source": str(src) if src else None, "linked": linked, "kept": kept, "skipped": skipped}
 
 
-def run_cmd(cmd: list[str], timeout: float) -> dict:
+def run_cmd(cmd: list[str], timeout: float, stdout_limit: int = 500) -> dict:
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -133,10 +145,11 @@ def run_cmd(cmd: list[str], timeout: float) -> dict:
         return {"ok": False, "error": "spawn_failed", "message": str(exc)}
     stdout = (proc.stdout or "").strip()
     stderr = (proc.stderr or "").strip()
+    limit = max(500, int(stdout_limit))
     return {
         "ok": proc.returncode == 0,
         "code": proc.returncode,
-        "stdout": stdout[:500],
+        "stdout": stdout[:limit],
         "stderr": stderr[:300],
     }
 
