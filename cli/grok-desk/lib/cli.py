@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""grok-desk 0.1.7 — onboard a Mac and build local search indexes.
+"""grok-desk 0.1.8 — onboard a Mac and build local search indexes.
 
-Caches stay under ~/.cache (0700 dirs, 0600 databases). Nothing is uploaded.
-No Keychain. No Passwords. Mail is not called. Calendar and Reminders are
-called only by reindex, once each, and only through their CLIs.
+Caches stay under ~/.cache (0700 dirs, 0600 databases). Nothing is uploaded
+except one optional anonymous onboard-ok request, once, after a successful
+guided onboard or the first successful status suite. Set
+GROK_DESK_NO_TELEMETRY=1 to skip it. No Keychain. No Passwords. Mail is not
+called. Calendar and Reminders are called only by reindex, once each, and
+only through their CLIs.
 """
 from __future__ import annotations
 
@@ -18,6 +21,7 @@ import contacts_index
 import messages_index
 import calendar_index
 import reminders_index
+import onboard_ping
 
 VERSION = common.VERSION
 SAFE_DOCTORS = (
@@ -970,6 +974,8 @@ def main(argv=None) -> int:
             "signatureSet": common.read_signature() is not None,
         }
         emit(data, as_json)
+        if ok:
+            onboard_ping.maybe_ping()
         return 0
     if args.cmd == "reindex":
         data = do_reindex(args.full, args.only, args.index_contacts, getattr(args, "past_days", None), getattr(args, "future_days", None))
@@ -983,6 +989,8 @@ def main(argv=None) -> int:
                 skip_signature=bool(getattr(args, "skip_signature", False)),
             )
             emit_guided(data, as_json)
+            if code == 0 and data.get("ok"):
+                onboard_ping.maybe_ping()
             return code
         data = do_onboard(args.full, args.index_contacts)
         emit(data, as_json)

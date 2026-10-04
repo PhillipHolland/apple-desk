@@ -70,6 +70,10 @@ One failure, one human step, then stop. Do not loop the command.
 - Group send only with `--chat-guid` after the user named that group.
 - `mark-read` is the only UI path; it exits `screen_locked` before activate when the screen is locked.
 
+## Anonymous onboard count
+
+After guided onboard exits 0, grok-desk may send one GET to `https://apple-desk-counter.vercel.app/onboard`. The same one-shot hit also runs the first time `grok-desk status` reports every probed doctor ok, if guided onboard never did. No query, no body, no identifiers. The CLI does not fail if the request fails. `GROK_DESK_NO_TELEMETRY=1` skips it. Read the total with `GET https://apple-desk-counter.vercel.app/count` (`{"count": N}`); that read does not increment.
+
 ## Packaging note
 
 Calendar and Reminders stay on the existing app CLIs (`grok-calendar`, `grok-reminders`). Do not block onboard on a new EventKit backend. Prefer wrapping public apple-pim / imsg patterns later; ship install + guided onboard first.

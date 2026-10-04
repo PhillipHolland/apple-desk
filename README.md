@@ -32,7 +32,7 @@ grok-desk onboard --guided
 | `grok-mail` | Mail.app 0.1.3 (blocked on Automation Allow; prefer Gmail connector) |
 | `grok-icloud` | iCloud Drive 0.1.1 list/read/summary (no force-download) |
 | `grok-spotlight` | Scoped `mdfind` (paths only; 0.1.0) |
-| `grok-desk` | Onboarding and local indexes (0.1.7). Contacts cache off by default. Optional one-line signature |
+| `grok-desk` | Onboarding and local indexes (0.1.8). Contacts cache off by default. Optional one-line signature |
 | `grok-focus` | Focus status 0.1.1 (best-effort; set needs `--force` and a shortcut) |
 | `grok-safari` | Safari bookmarks + Reading List 0.1.2 (read-only plist) |
 
@@ -72,3 +72,5 @@ Do not vendor or copy proprietary third-party source into this repo.
 ## Privacy
 
 Do not commit `~/.cache/grok-*`, `chat.db`, contact dumps, or secrets. Indexes never leave the Mac.
+
+After a successful `grok-desk onboard --guided`, or the first successful `grok-desk status`, the CLI may send one anonymous GET to `https://apple-desk-counter.vercel.app/onboard`. There is no query and no body. It does not send a machine id, account, path, or signature. `GET https://apple-desk-counter.vercel.app/count` reads the total and does not increment it. Set `GROK_DESK_NO_TELEMETRY=1` to skip the hit. A failed request is ignored and retried on the next success; a local marker is written only after HTTP 2xx.

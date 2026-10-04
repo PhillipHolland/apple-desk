@@ -10,7 +10,7 @@ This checkout is the public monorepo https://github.com/PhillipHolland/apple-des
 
 | Tool | Source version | Path in this checkout |
 | --- | --- | --- |
-| grok-desk | 0.1.7 | `cli/grok-desk/bin/grok-desk` |
+| grok-desk | 0.1.8 | `cli/grok-desk/bin/grok-desk` |
 | grok-reminders | 0.1.5 | `cli/grok-reminders/bin/grok-reminders` |
 | grok-notes | 0.2.3 | `cli/grok-notes/bin/grok-notes` |
 | grok-contacts | 0.1.3 | `cli/grok-contacts/bin/grok-contacts` |

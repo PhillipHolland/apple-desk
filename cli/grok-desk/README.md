@@ -1,6 +1,6 @@
 # grok-desk
 
-Local onboarding for Apple Desk. Version 0.1.7.
+Local onboarding for Apple Desk. Version 0.1.8.
 
 Builds search caches on this Mac so later lookups do not walk Notes or `chat.db` from scratch. Nothing is uploaded. No Keychain. No Passwords.
 

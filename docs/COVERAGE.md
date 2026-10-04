@@ -8,7 +8,7 @@ Messages `react` is the first peer wrap (`imsg react`, 1:1, dry-run unless `--fo
 
 | CLI | Commands seen |
 | --- | --- |
-| `grok-desk` 0.1.7 | `doctor` `onboard` `reindex` `status` `search` `signature` `gaps` |
+| `grok-desk` 0.1.8 | `doctor` `onboard` `reindex` `status` `search` `signature` `gaps` |
 | `grok-messages` 0.2.11 | `doctor` `chats` `list` `recent` `search` `send` `attachments` `unread` `mark-read` `react` `history` `watch` `gaps` |
 | `grok-calendar` 0.1.6 | `doctor` `calendars` `name-at` `list` `search` `show` `create` `update` `delete` `alarm` `gaps` |
 | `grok-reminders` 0.1.5 | `doctor` `lists` `today` `upcoming` `search` `show` `add` `done` `delete` `flag` `move` `gaps` |

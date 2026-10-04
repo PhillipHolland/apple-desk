@@ -1,6 +1,6 @@
 # Capability gaps (honest)
 
-Updated 2026-10-04. Versions: grok-calendar 0.1.6, grok-contacts 0.1.3, grok-desk 0.1.7, grok-focus 0.1.1, grok-icloud 0.1.1, grok-mail 0.1.3, grok-messages 0.2.11, grok-notes 0.2.3, grok-reminders 0.1.5, grok-safari 0.1.2, grok-shortcuts 0.1.2, grok-spotlight 0.1.0. Measured doctors for Notes, Contacts, and Messages are the 2026-10-03 snapshot in AUDIT.md. Calendar, Reminders, and Mail doctors were not re-run. See SCOPE_AUDIT.md for the full Mac + iOS 27 map.
+Updated 2026-10-04. Versions: grok-calendar 0.1.6, grok-contacts 0.1.3, grok-desk 0.1.8, grok-focus 0.1.1, grok-icloud 0.1.1, grok-mail 0.1.3, grok-messages 0.2.11, grok-notes 0.2.3, grok-reminders 0.1.5, grok-safari 0.1.2, grok-shortcuts 0.1.2, grok-spotlight 0.1.0. Measured doctors for Notes, Contacts, and Messages are the 2026-10-03 snapshot in AUDIT.md. Calendar, Reminders, and Mail doctors were not re-run. See SCOPE_AUDIT.md for the full Mac + iOS 27 map.
 
 ## Shipped limits
 
@@ -15,7 +15,7 @@ Updated 2026-10-04. Versions: grok-calendar 0.1.6, grok-contacts 0.1.3, grok-des
 - Spotlight 0.1.0: paths only, Documents/Desktop by default; Keychains, Messages, Mail, HomeKit, Passes, Safari, Cookies refused
 - Focus 0.1.1: best-effort status from the local Do Not Disturb database on macOS 27. `set` without `--force` refuses. `--force` still needs an existing `--shortcut` and does not write the database. No doctor loop.
 - Safari 0.1.2: bookmarks and Reading List from Bookmarks.plist only. No history, passwords, cookies, Reading List edits, or URL opens. `to-note` is a dry-run unless `--force`; `--force` creates one Note through `grok-notes create-note` (title = item title, body = URL). Unreadable plist exits `needs_full_disk_access` without opening System Settings.
-- Desk 0.1.7: onboarding and local indexes. Contacts cache stays off unless requested.
+- Desk 0.1.8: onboarding and local indexes. Contacts cache stays off unless requested. After a successful guided onboard, or the first successful `grok-desk status`, one anonymous GET may be sent. Set `GROK_DESK_NO_TELEMETRY=1` to skip it.
 
 ## Deliberately not built
 
