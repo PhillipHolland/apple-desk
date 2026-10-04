@@ -16,7 +16,7 @@ from pathlib import Path
 
 import db
 
-VERSION = "0.2.12"
+VERSION = "0.2.13"
 LIB = Path(__file__).resolve().parent / "messages.js"
 ALLOWLIST = Path.home() / ".config" / "grok-messages" / "allowlist"
 MAX_TEXT = 4000
@@ -652,26 +652,12 @@ def cmd_send(args):
 
             emit(preview, as_json, show_new)
             return
+        # The chat row already came from chat.db. Do not ask Messages
+        # scripting on a dry-run. That call can sit for the full timeout
+        # even when Messages is idle. Scripting stays on the real send.
+        preview["resolvedFrom"] = "chat.db"
         if route == "participant":
-            resolved = call_jxa({"op": "resolve_participant", "handle": handle, "service": chat.get("service")}, 45, as_json)
-            preview["participantFound"] = bool(resolved.get("found"))
-            preview["participantService"] = resolved.get("service")
-            if not resolved.get("found"):
-                looked = call_jxa({"op": "resolve_chat", "chatId": chat["guid"]}, 45, as_json)
-                preview["directChatInScriptingList"] = bool(looked.get("found"))
-                preview["scriptingGroup"] = looked.get("group")
-                if looked.get("found") and looked.get("group"):
-                    emit({
-                        "ok": False,
-                        "error": "refusing_group",
-                        "message": _group_only_message(to, [chat]),
-                        "groups": _group_brief([chat]),
-                    }, as_json, lambda d: None)
-        else:
-            looked = call_jxa({"op": "resolve_chat", "chatId": chat["guid"]}, 45, as_json)
-            preview["inScriptingList"] = bool(looked.get("found"))
-            preview["scriptingGroup"] = looked.get("group")
-            preview["participantCount"] = looked.get("participantCount")
+            preview["participantFound"] = True
 
         _attach_confirm(preview, binding, text, as_json)
 
@@ -679,7 +665,12 @@ def cmd_send(args):
             chat = d["chat"]
             label = chat.get("name") or chat.get("identifier") or chat.get("guid")
             if d["route"] == "participant":
-                found = "participant found" if d.get("participantFound") else "participant not in scripting list"
+                if d.get("resolvedFrom") == "chat.db":
+                    found = "chat already in the database"
+                elif d.get("participantFound"):
+                    found = "participant found"
+                else:
+                    found = "participant not in scripting list"
                 print(f"dry-run: would send {d['textLength']} characters 1:1 via participant {d.get('handle')} ({found}, {chat.get('service')})")
                 print(f"direct chat: {label} style={chat.get('style')} guid={chat.get('guid')}")
             else:

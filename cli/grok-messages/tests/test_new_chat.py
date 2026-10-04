@@ -170,7 +170,7 @@ def main():
             failures.append(name)
             print("FAIL", name)
 
-    check("version is 0.2.12", cli.VERSION == "0.2.12")
+    check("version is 0.2.13", cli.VERSION == "0.2.13")
     check("email handle", db.is_new_chat_handle(HANDLE))
     check("phone handle", db.is_new_chat_handle(PHONE))
     check("display name is not a handle", not db.is_new_chat_handle(GROUP_NAME))
@@ -228,7 +228,7 @@ def main():
     data = json.loads(out)
     check("existing chat is not a create", code == 0 and data.get("wouldCreate") is False and data.get("route") == "participant")
     check("existing dry-run does not send", guard.send == [] and data.get("sent") is False)
-    check("existing dry-run only resolves", [item.get("op") for item in guard.jxa] == ["resolve_participant"])
+    check("existing dry-run does not call Messages", guard.jxa == [])
 
     code, out, err, guard = run(["send", "--to", KEPT, "--text", BODY, "--json"], [KEPT_CHAT])
     token = json.loads(out)["confirmToken"]
