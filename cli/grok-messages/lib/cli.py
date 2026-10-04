@@ -21,7 +21,7 @@ GAPS = [
     "Messages 26 scripting can list chats (id, name, participants) and send text to an existing chat. It cannot read message history. History comes from ~/Library/Messages/chat.db and needs Full Disk Access for the process that runs this CLI (Grok Bot Helper when an agent runs it).",
     "Send only works for a chat currently in the Messages scripting list. Unknown-sender and junk chats are often absent there, so history can show them while send returns not_in_messages_ui. Nothing is sent in that case.",
     "send --to is a person only (phone, email, or a 1:1 chat). It never targets a group, even when that handle is a member of one. The send uses Messages' participant object (1:1). If the handle exists only in a group, send refuses and names that group's guid. Group sends require --chat-guid, which the user must name on purpose. This CLI does not create groups.",
-    "attachments lists metadata for one chat (name, mime, bytes, sticker, date). It does not download, open, or copy the file, and it does not return the absolute path. Send still cannot attach a file. react is a 1:1 wrap of imsg react (love, like, dislike, laugh, emphasis, question; emphasize means emphasis). It is a dry-run unless --force, has no --chat-guid, and refuses groups. --force does not check the screen lock and does not activate Messages. It runs imsg react once. Screen lock does not block react. It does not call imsg tapback, imsg launch, or IMCore, and it has no AppleScript fallback. Stickers-as-send, message effects, edits, unsends, and replies are still absent. Send is plain text only, capped at 4000 characters.",
+    "attachments lists metadata for one chat (name, mime, bytes, sticker, date). It does not download, open, or copy the file, and it does not return the absolute path. Send still cannot attach a file. react is a 1:1 wrap of imsg react (love, like, dislike, laugh, emphasis, question; emphasize means emphasis). It is a dry-run unless --force, has no --chat-guid, and refuses groups. --force does not pre-check the screen lock and does not activate Messages. It runs imsg react once. Vendor imsg activates Messages and exits -2700 if it is not in front. It does not call imsg tapback, imsg launch, or IMCore, and it has no AppleScript fallback. Stickers-as-send, message effects, edits, unsends, and replies are still absent. Send is plain text only, capped at 4000 characters.",
     "No pin, mute, hide alerts, or Focus filter changes. mark-read does not write chat.db and does not use IMCore. With --force it makes Messages frontmost, then clicks an enabled Conversation > Mark All as Read. Activate alone is not success. It does not send.",
     "Search looks at the message text column only. Attachment-only rows and a few attributed-body-only rows have null text and will not match. Snippets are capped.",
     "Reactions are labeled (love, like, dislike, laugh, emphasize, question, emoji) from the row itself. The message that was reacted to is not pulled in.",
@@ -220,7 +220,7 @@ def cmd_doctor(args):
             print("allowlist: off (send still needs --force)")
         print("writes: send only with --force. mark-read --force clicks enabled Conversation > Mark All as Read after Messages is frontmost. No chat.db write.")
         print("send --to is 1:1 participant only; a group needs --chat-guid")
-        print("react is 1:1 only (no --chat-guid). Dry-run unless --force, which runs imsg react once. Screen lock does not block react.")
+        print("react is 1:1 only (no --chat-guid). Dry-run unless --force, which runs imsg react once. The wrap does not pre-check the lock. Vendor imsg exits -2700 if Messages is not in front.")
 
     emit(data, as_json, text)
 
@@ -995,8 +995,8 @@ def build_parser():
             "There is no --chat-guid. A group (participant count above 1, or group style) is refused. "
             "With no --force this is a dry-run: it prints the chat rowid, a short last non-reaction snippet, "
             "the reaction, and the exact imsg command, and it does not execute anything. "
-            "--force does not check the screen lock and does not activate Messages. It runs imsg react once. "
-            "Screen lock does not block react. "
+            "--force does not pre-check the screen lock and does not activate Messages. It runs imsg react once. "
+            "Vendor imsg activates Messages and exits -2700 if it is not in front. "
             "Reactions: love, like, dislike, laugh, emphasis, question. emphasize is emphasis. "
             "Anything else exits 2 with error unsupported. "
             "The binary is $GROK_MESSAGES_IMSG when that path is executable, otherwise the vendored imsg 0.15.10. "
@@ -1010,7 +1010,7 @@ def build_parser():
     react.add_argument("--to", required=True, help="Person only: phone, email, or a 1:1 chat name. Groups are refused.")
     react.add_argument("--reaction", required=True, help="love, like, dislike, laugh, emphasis, or question. emphasize means emphasis.")
     react.add_argument("--service", choices=("iMessage", "SMS", "RCS"), help="Limit --to to one service when several 1:1 chats match.")
-    react.add_argument("--force", action="store_true", help="Run imsg react once. Does not check the screen lock and does not activate Messages. Without this, dry-run only.")
+    react.add_argument("--force", action="store_true", help="Run imsg react once. The wrap does not pre-check the lock or activate Messages. Vendor imsg may still require Messages in front. Without this, dry-run only.")
     react.set_defaults(func=cmd_react)
 
     gaps = sub.add_parser("gaps")
