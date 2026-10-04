@@ -84,14 +84,16 @@ One failure, one human step, then stop. Do not loop the command.
 
 ## Consent and Messages send
 
-- Draft recipient + **exact** text (append the signature line yourself if `grok-desk signature` is set). Wait for an explicit yes. Then `grok-messages send --force`. The CLI does not append the signature.
+- Draft recipient + **exact** text (append the signature line yourself if `grok-desk signature` is set). Wait for an explicit yes. `grok-messages send` without `--force` is a dry-run and prints a confirm token. Only `grok-messages send --force --confirm TOKEN` sends. `--force` alone does not send. The CLI does not append the signature.
 - Before an outbound send or react, the draft confirmation must include the output of `grok-focus status`. Focus filters the sender's UI more than the recipient's notifications. Do not block the send. Do not refuse `--force` because Focus is on. Do not activate Messages. Do not call `grok-focus set`.
 - **1:1 send** is Messages **participant** only. No `activate`, no menus. `--to` never targets a group.
 - **Group send** only with `--chat-guid` after the user named that group.
 - Send failures use the exit-code card: **4** stops for one Allow click; **-1712** quits and relaunches Messages once, then one retry, then stop.
 - Do not write `chat.db`. Read-only confirm of one outgoing row is ok after an approved send.
 - `mark-read` exits `screen_locked` before activate when locked. `react --force` does not pre-check the lock and does not activate Messages. Vendor `imsg react` activates Messages itself and exits -2700 if Messages is not in front, so a locked screen still cannot finish a tapback. imsg tapback is not a fallback: it needs SIP disabled and imsg launch, which Apple Desk will not do.
-- Deletes and other writes need `--force` and an id the user named.
+- Deletes and other writes need `--force` and an id the user named. Notes create/edit/append, calendar create/update, reminders add and done, and contacts create/update stay a dry-run unless `--force`.
+- Calendar and reminders honor `--dry-run` even when a vendor CLI is installed. A dry-run does not call that vendor CLI.
+- `grok-desk reindex` and onboard stay metadata-only for Messages and Notes unless `--index-bodies`.
 
 ## Tapbacks v1 (shipped)
 
@@ -100,8 +102,11 @@ One failure, one human step, then stop. Do not loop the command.
 ## When not to use
 
 - No registered Mac, or the Mac is offline
-- Passwords, Keychain, HomeKit, Safari history, Photos, Journal, Find My
-- Raw `sqlite3` against NoteStore / AddressBook / `chat.db` (except `grok-desk reindex`, which reads `chat.db` read-only into `~/.cache/grok-messages`)
+- Passwords, Keychain, Safari history, Photos, Find My
+- Home: no `grok-home` CLI. The only bridge is a Shortcut the human already created. See `docs/HOME.md`.
+- Health is parked. There is no Mac Health app and no Mac HealthKit path.
+- Journal is parked. It is not reachable from the shell or AppleScript.
+- Raw `sqlite3` against NoteStore / AddressBook / `chat.db` (except `grok-desk reindex`, which reads `chat.db` read-only into `~/.cache/grok-messages`, metadata-only unless `--index-bodies`)
 - Inventing RemCTL / NotesCTL / a second EventKit tree to unblock onboard
 
 ## Principles
