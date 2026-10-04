@@ -32,3 +32,10 @@ If `~/.config/grok-messages/allowlist` exists, the target must be listed (one ph
 The first Messages command needs Automation permission for the calling app to control Messages (System Settings → Privacy & Security → Automation). Error -1743 means that grant is missing. History needs Full Disk Access for Grok Bot and Grok Bot Helper. Send does not.
 
 Do not copy `chat.db` off this Mac.
+
+`attachments` lists metadata for one chat (name, mime, bytes, sticker, date). It does not open, copy, or send the file. Default output has no absolute path. `--reveal-path` prints the local path already stored on that row and warns that the file is private. It does not open the file and does not search the disk. If the row has no path, the command says so and exits cleanly.
+
+```bash
+grok-messages attachments --chat-guid "fixture-chat"
+grok-messages attachments --chat-guid "fixture-chat" --reveal-path
+```

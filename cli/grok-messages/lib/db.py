@@ -588,8 +588,23 @@ def _snippet(text: str, needle: str) -> str:
     return chunk
 
 
-def list_attachments(con, chat_rowid: int, limit: int):
-    """Metadata only. No message text, no absolute paths, no sticker blobs."""
+def local_attachment_path(filename):
+    """Absolute path already stored on the row. Does not stat or search the disk."""
+    if filename is None:
+        return None
+    raw = str(filename).strip()
+    if not raw:
+        return None
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        return None
+    return str(path)
+
+
+def list_attachments(con, chat_rowid: int, limit: int, reveal_path: bool = False):
+    """Metadata only unless reveal_path. No message text and no sticker blobs.
+    A revealed path is the absolute filename already on the row. Missing rows stay empty.
+    """
     total = con.execute(
         """
         select count(*)
@@ -621,7 +636,7 @@ def list_attachments(con, chat_rowid: int, limit: int):
         name = row["transfer_name"] or None
         if not name and row["filename"]:
             name = Path(str(row["filename"])).name
-        out.append({
+        item = {
             "id": row["id"],
             "name": name,
             "mime": row["mime_type"],
@@ -632,5 +647,10 @@ def list_attachments(con, chat_rowid: int, limit: int):
             "hidden": bool(row["hide_attachment"]),
             "at": apple_to_iso(row["created_date"]),
             "stored": bool(row["filename"]),
-        })
+        }
+        if reveal_path:
+            item["path"] = local_attachment_path(row["filename"])
+            if item["path"] is None:
+                item["pathNote"] = "not available from the attachment row; nothing was searched"
+        out.append(item)
     return int(total), out
