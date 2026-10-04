@@ -250,7 +250,21 @@ def print_write(data):
 
 
 def build_parser():
-    p = argparse.ArgumentParser(prog="grok-contacts", description="Contacts.app CLI (JXA). Read by default.")
+    p = argparse.ArgumentParser(
+        prog="grok-contacts",
+        description="Contacts.app CLI (JXA). Look up by name, phone, or email.",
+        epilog=(
+            "Phone or email lookup uses the local index only (never Contacts.app):\n"
+            "  grok-contacts search QUERY --field phone\n"
+            "  grok-contacts search QUERY --field email\n"
+            "Name is the default field. --live is a name search against Contacts.app.\n"
+            "The index is off until one of:\n"
+            "  grok-desk reindex --only contacts\n"
+            "  grok-desk onboard --guided --index-contacts\n"
+            "See docs/CONTACTS_INDEX.md."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     p.add_argument("--version", action="version", version=f"grok-contacts {VERSION}")
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -261,11 +275,29 @@ def build_parser():
     sp.add_argument("--live", action="store_true", help="light Contacts.app check (version and group names, no people walk)")
     add_json(sp)
 
-    sp = sub.add_parser("search", help="Find contacts. Uses the local index unless --live.")
-    sp.add_argument("query")
-    sp.add_argument("--field", choices=("name", "phone", "email"), default="name")
+    sp = sub.add_parser(
+        "search",
+        help="Find by name, phone, or email in the local index. --live is name only.",
+        description="Find contacts by name, phone, or email. Phone and email use the local index only.",
+        epilog=(
+            "examples:\n"
+            "  grok-contacts search QUERY --field phone\n"
+            "  grok-contacts search QUERY --field email\n"
+            "  grok-contacts search QUERY\n"
+            "Phone and email never call Contacts.app. --live with those fields exits\n"
+            "unsupported_field. The index is off until: grok-desk reindex --only contacts"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    sp.add_argument("query", help="At least 2 characters. Substring of the chosen field.")
+    sp.add_argument(
+        "--field",
+        choices=("name", "phone", "email"),
+        default="name",
+        help="name (default; also matches organization), phone, or email. phone and email need the contacts index",
+    )
     sp.add_argument("--limit", type=int, default=20)
-    sp.add_argument("--live", action="store_true", help="query Contacts.app instead of the local index")
+    sp.add_argument("--live", action="store_true", help="name search against Contacts.app. Not valid with --field phone or email")
     add_json(sp)
 
     sp = sub.add_parser("show", help="One contact, including phones and emails")
