@@ -59,6 +59,8 @@ grok-desk signature --clear
 
 PARA folders and hashtags (`#project/x`, `#area/y`, `#waiting`, `#ref`) are recipes in `docs/NOTES_PARA.md`. Use `create-folder`, `create-note`, and `tags`. No extra app and no extra database.
 
+`grok-notes promote-checklist --id NOTEID --index 1` is a dry-run unless `--force`. It reads one checklist line and, only with `--force`, adds one reminder through `grok-reminders add`. It does not mark the line done. Recipe: `docs/NOTES_CHECKLIST_REMINDER.md`.
+
 Snooze a Messages chat by creating a Reminder whose notes contain the chat guid. Recipe: `docs/MESSAGES_SNOOZE.md`.
 
 Before an outbound send or react, include `grok-focus status` in the draft. Recipe: `docs/FOCUS_ETIQUETTE.md`.

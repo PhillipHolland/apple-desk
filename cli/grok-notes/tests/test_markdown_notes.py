@@ -105,7 +105,7 @@ def main():
     help_text = cli.build_parser().format_help()
     check("help import", "import-md" in help_text)
     check("help export", "export-md" in help_text)
-    check("version", cli.VERSION == "0.2.2")
+    check("version", cli.VERSION == "0.2.3")
 
     if failures:
         print("failures:", ", ".join(failures))

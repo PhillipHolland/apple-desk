@@ -293,6 +293,21 @@ def _due_ok(value):
     import re
     return bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}( \d{2}:\d{2})?", value.strip()))
 
+
+def build_add_payload(title, list_name=None, due=None, notes=None, priority=None):
+    """One Reminders.app add. Same fields as `grok-reminders add`. Not a second backend."""
+    payload = {"op": "add", "title": title}
+    if list_name:
+        payload["list"] = list_name
+    if due:
+        payload["due"] = due
+    if notes:
+        payload["notes"] = notes
+    if priority:
+        payload["priority"] = priority
+    return payload
+
+
 def cmd_add(args):
     as_json = args.json
     title = (args.title or "").strip()
@@ -313,15 +328,7 @@ def cmd_add(args):
         }
         emit(data, as_json, lambda d: print(f"dry-run add {d.get('title')!r} (Reminders not called)"))
         return
-    payload = {"op": "add", "title": title}
-    if args.list:
-        payload["list"] = args.list
-    if args.due:
-        payload["due"] = args.due
-    if args.notes:
-        payload["notes"] = args.notes
-    if args.priority:
-        payload["priority"] = args.priority
+    payload = build_add_payload(title, list_name=args.list, due=args.due, notes=args.notes, priority=args.priority)
     data = call_jxa(payload, LONG_TIMEOUT, as_json)
 
     def text(d):

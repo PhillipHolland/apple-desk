@@ -13,7 +13,7 @@ from pathlib import Path
 import index as indexlib
 import markdown_notes
 
-VERSION = "0.2.2"
+VERSION = "0.2.3"
 ROOT = Path(__file__).resolve().parent.parent
 LIB = Path(__file__).resolve().parent / "notes.js"
 
@@ -21,7 +21,7 @@ GAPS = [
     "Pin and unpin are not in the Notes scripting dictionary (checked Notes 4.13 on macOS 27).",
     "Lock and unlock are not scriptable. password protected is read-only. This CLI never asks for the Notes password.",
     "Share is read-only. You can see the shared flag. You cannot start a share, copy a collaboration link, or co-edit.",
-    "Checklist items can be added as HTML <li>, and existing <li> text can be read. Notes rewrote checked/done/class attributes off <li> on write, so toggling checked is not reliable.",
+    "Checklist items can be added as HTML <li>, and existing <li> text can be read. Notes rewrote checked/done/class attributes off <li> on write, so toggling checked is not reliable. promote-checklist does not mark the line done. The backlink is plain text on the reminder (note id and title) because the link-a-note UI is not scriptable.",
     "Drawings, handwriting, scans, tables, PencilKit, audio, and transcription are not scriptable.",
     "Attachments can be listed (name, id, URL, content id) but not added, saved, or removed.",
     "Tags are hashtags in the note text, not a tag object. There are no smart folders.",
@@ -92,7 +92,7 @@ def call_jxa(payload, timeout, as_json):
 
 def emit(data, as_json, text_fn):
     if not data.get("ok", False):
-        code = 2 if data.get("error") in ("needs_force", "needs_allow_large", "unsupported", "missing_target", "missing_title", "missing_name", "missing_change", "missing_text", "missing_query", "missing_folder", "ambiguous", "bad_request", "already_exists", "file_exists", "missing_path", "missing_out", "empty_markdown", "bad_encoding", "too_large") else 1
+        code = 2 if data.get("error") in ("needs_force", "needs_allow_large", "unsupported", "missing_target", "missing_title", "missing_name", "missing_change", "missing_text", "missing_query", "missing_folder", "ambiguous", "bad_request", "already_exists", "file_exists", "missing_path", "missing_out", "empty_markdown", "bad_encoding", "too_large", "missing_line", "bad_index", "no_checklist", "missing_id") else 1
         if as_json:
             data.setdefault("tool", "grok-notes")
             data.setdefault("version", VERSION)
@@ -362,6 +362,158 @@ def print_export_md(data):
     print(f"bytes: {data.get('bytes')}")
 
 
+
+def checklist_backlink(note_id, note_title):
+    title = note_title or "(untitled)"
+    return f"Backlink\ntitle: {title}\nid: {note_id}"
+
+
+def promotion_plan(note_id, note_title, line_text, due=None, list_name=None):
+    plan = {
+        "title": line_text,
+        "notes": checklist_backlink(note_id, note_title),
+    }
+    if due:
+        plan["due"] = due
+    if list_name:
+        plan["list"] = list_name
+    return plan
+
+
+def select_checklist_line(items, index, text):
+    items = items or []
+    if index is not None and text is not None and str(text).strip():
+        return {"ok": False, "error": "bad_request", "message": "Pass --index or --text, not both. Nothing was created."}
+    if index is None and not (text and str(text).strip()):
+        return {"ok": False, "error": "missing_line", "message": "Pass --index or --text for one checklist line. Nothing was created."}
+    if not items:
+        return {"ok": False, "error": "no_checklist", "message": "That note has no checklist lines. Nothing was created."}
+    if index is not None:
+        if index < 1 or index > len(items):
+            return {"ok": False, "error": "bad_index", "message": f"Checklist index must be 1 through {len(items)}. Nothing was created."}
+        item = items[index - 1]
+        return {"ok": True, "text": item["text"], "index": index, "checked": bool(item.get("checked"))}
+    needle = str(text).strip()
+    hits = [(i, item) for i, item in enumerate(items, 1) if item.get("text") == needle]
+    if not hits:
+        return {"ok": False, "error": "not_found", "message": "No checklist line with that exact text. Nothing was created."}
+    if len(hits) > 1:
+        return {"ok": False, "error": "ambiguous", "message": "More than one checklist line has that exact text. Pass --index. Nothing was created."}
+    i, item = hits[0]
+    return {"ok": True, "text": item["text"], "index": i, "checked": bool(item.get("checked"))}
+
+
+_REMINDERS = None
+
+
+def load_reminders_cli():
+    """The existing grok-reminders CLI. Not a second reminders backend."""
+    global _REMINDERS
+    if _REMINDERS is None:
+        import importlib.util
+        path = Path(__file__).resolve().parents[2] / "grok-reminders" / "lib" / "cli.py"
+        spec = importlib.util.spec_from_file_location("grok_reminders_cli", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _REMINDERS = mod
+    return _REMINDERS
+
+
+def apply_reminder(plan):
+    reminders = load_reminders_cli()
+    payload = reminders.build_add_payload(
+        plan["title"],
+        list_name=plan.get("list"),
+        due=plan.get("due"),
+        notes=plan.get("notes"),
+    )
+    return reminders.call_jxa(payload, reminders.LONG_TIMEOUT, False)
+
+
+def print_promote(data):
+    line = data.get("line")
+    if data.get("dryRun"):
+        print(f"dry-run: would add one reminder {line!r}")
+    else:
+        rid = data.get("reminderId") or ""
+        print(f"added reminder {line!r}" + (f"  id {rid}" if rid else ""))
+    print(f"note: {data.get('noteTitle')}")
+    print(f"id: {data.get('noteId')}")
+    if data.get("due"):
+        print(f"due: {data.get('due')}")
+    else:
+        print("due: none")
+    if data.get("list"):
+        print(f"list: {data.get('list')}")
+    print("checklist line left unchanged (checked state is not reliable; the backlink is on the reminder)")
+    if data.get("message"):
+        print(data["message"])
+
+
+def cmd_promote_checklist(args, as_json):
+    note_id = (args.id or "").strip()
+    if not note_id:
+        die(2, "missing_id", "promote-checklist needs --id. Nothing was created.", as_json)
+    line_text = args.text if isinstance(args.text, str) else None
+    if args.index is not None and line_text is not None and line_text.strip():
+        die(2, "bad_request", "Pass --index or --text, not both. Nothing was created.", as_json)
+    if args.index is None and not (line_text and line_text.strip()):
+        die(2, "missing_line", "Pass --index or --text for one checklist line. Nothing was created.", as_json)
+    due = args.due.strip() if isinstance(args.due, str) and args.due.strip() else None
+    if due and not load_reminders_cli()._due_ok(due):
+        die(2, "bad_request", "Due must be YYYY-MM-DD or YYYY-MM-DD HH:MM. Notes and Reminders were not called.", as_json)
+    list_name = args.list.strip() if isinstance(args.list, str) and args.list.strip() else None
+    data = call_jxa({"cmd": "show", "id": note_id, "full": True}, 60, as_json)
+    if not data.get("ok"):
+        emit(data, as_json, print_promote)
+        return 0
+    notes = data.get("notes") or []
+    if not notes:
+        die(1, "not_found", "No note with that id. Nothing was created.", as_json)
+    if len(notes) != 1:
+        die(2, "ambiguous", "More than one note matched that id. Nothing was created.", as_json)
+    note = notes[0]
+    if note.get("locked"):
+        die(1, "locked", "Note is password protected. Nothing was created.", as_json)
+    chosen = select_checklist_line(parse_checklist(note.get("html") or ""), args.index, line_text)
+    if not chosen.get("ok"):
+        die(2, chosen.get("error") or "bad_request", chosen.get("message") or "Nothing was created.", as_json)
+    plan = promotion_plan(note.get("id") or note_id, note.get("title"), chosen["text"], due=due, list_name=list_name)
+    summary = {
+        "ok": True,
+        "tool": "grok-notes",
+        "version": VERSION,
+        "command": "promote-checklist",
+        "dryRun": not args.force,
+        "applied": False,
+        "checklistChanged": False,
+        "noteId": note.get("id") or note_id,
+        "noteTitle": note.get("title"),
+        "index": chosen["index"],
+        "line": chosen["text"],
+        "checked": chosen["checked"],
+        "due": due,
+        "list": list_name,
+        "reminder": plan,
+        "bridge": "grok-reminders-add",
+    }
+    if not args.force:
+        summary["message"] = "dry-run: Notes was only read. Reminders.app was not called. Pass --force to add one reminder. The checklist line is not marked done."
+        emit(summary, as_json, print_promote)
+        return 0
+    created = apply_reminder(plan)
+    if not created.get("ok"):
+        emit(created, as_json, print_promote)
+        return 0
+    summary["dryRun"] = False
+    summary["applied"] = True
+    summary["reminderId"] = created.get("id")
+    summary["reminderList"] = created.get("list")
+    summary["message"] = "Added one reminder through grok-reminders. The checklist line was not changed."
+    emit(summary, as_json, print_promote)
+    return 0
+
+
 def add_target(p):
     p.add_argument("title", nargs="?", help="exact note title")
     p.add_argument("--title", dest="title_flag", help="exact note title")
@@ -469,6 +621,14 @@ def build_parser():
     s = chk_sub.add_parser("add", parents=[parent])
     add_target(s)
     s.add_argument("--text", required=True)
+
+    p = sub.add_parser("promote-checklist", parents=[parent], help="turn one checklist line into one reminder (dry-run unless --force)")
+    p.add_argument("--id", help="note id")
+    p.add_argument("--index", type=int, help="1-based checklist line")
+    p.add_argument("--text", help="exact checklist line text")
+    p.add_argument("--due", help="YYYY-MM-DD or YYYY-MM-DD HH:MM; omit for no due date")
+    p.add_argument("--list", help="Reminders list name")
+    p.add_argument("--force", action="store_true", help="add the reminder through grok-reminders; without this, Notes is only read")
     p = sub.add_parser("share", parents=[parent])
     add_target(p)
     for name in ("pin", "unpin", "lock", "unlock"):
@@ -678,6 +838,8 @@ def main(argv=None):
         data = indexlib.cached_folders()
         emit(data, as_json, print_folders)
         return 0
+    if args.cmd == "promote-checklist":
+        return cmd_promote_checklist(args, as_json)
     if args.cmd == "import-md":
         return cmd_import_md(args, as_json)
     if args.cmd == "export-md":

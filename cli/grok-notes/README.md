@@ -30,6 +30,9 @@ grok-notes delete-folder "Name" --force
 grok-notes empty-trash --force
 grok-notes checklist show --id NOTEID
 grok-notes checklist add --id NOTEID --text "item"
+grok-notes promote-checklist --id NOTEID --index 1
+grok-notes promote-checklist --id NOTEID --text "Pack bag" --due "2026-10-04"
+grok-notes promote-checklist --id NOTEID --index 1 --force
 grok-notes attachments --id NOTEID
 grok-notes share --id NOTEID
 grok-notes cache-clear
@@ -45,6 +48,15 @@ Add `--json` for JSON. Deletes need `--force`. Deleting a folder named Notes, a 
 `reindex` writes plaintext (capped at 200000 characters per note) to `~/.cache/grok-notes/index.sqlite` (directory `0700`, file `0600`). That file is not iCloud. `cache-clear` removes the index only. After creates, edits, moves, or deletes, run `reindex` before expecting `search` to see them. `search` does not take `--live` unless you want the old slow Apple Event walk.
 
 `pin`, `unpin`, `lock`, and `unlock` exit with an error. They are not scriptable. `grok-notes gaps` lists the rest (share sheet, checked checklists, drawings, scans, attachment bytes, smart folders).
+
+
+## Checklist to one reminder
+
+`promote-checklist` turns one checklist line into one reminder. It is a dry-run unless `--force`. The dry-run reads that note (`show`) and does not call Reminders.app. `--force` adds one reminder through `grok-reminders add` (Reminders.app JXA). It does not use a second reminders backend.
+
+Pass `--id` and either `--index` (1-based, same order as `checklist show`) or `--text` (one exact line). `--due` is optional (`YYYY-MM-DD` or `YYYY-MM-DD HH:MM`). Omit it and the reminder has no due date. `--list` chooses the Reminders list; omit it and add uses the default list.
+
+The reminder title is the checklist line. The reminder notes are a plain-text backlink with the note title and the note id. The checklist line is not marked done. Notes rewrote `checked`, `done`, and `class` off `<li>` on write, so checked-state is not reliable. The link-a-note UI is not scriptable, so the backlink stays text on the reminder. See [docs/NOTES_CHECKLIST_REMINDER.md](../../docs/NOTES_CHECKLIST_REMINDER.md).
 
 ## Markdown import and export
 
