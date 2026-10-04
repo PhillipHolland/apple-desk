@@ -76,4 +76,6 @@ Notes did not preserve:
 
 After `import-md --force`, run `reindex` before you expect `search` or `tags` to see the new note.
 
+Folder and hashtag recipes (Projects, Areas, Resources, Archives, `#project/name`, `#area/name`, `#waiting`, `#ref`) are in [docs/NOTES_PARA.md](../../docs/NOTES_PARA.md).
+
 The first successful Notes command needs Automation permission for the calling app to control Notes (System Settings → Privacy & Security → Automation). Error -1743 means that grant is missing.
