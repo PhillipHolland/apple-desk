@@ -1,613 +1,419 @@
 #!/usr/bin/env python3
-"""grok-calendar command line. Calendar.app via JXA. Not a cloud calendar API."""
+"""Apple Desk's Calendar CLI: one owned EventKit backend, no cache/PIM fallback."""
 from __future__ import annotations
-
 import argparse
+import base64
+from datetime import date, datetime, timedelta, timezone
 import json
+import math
+import os
+from pathlib import Path
+import re
 import subprocess
 import sys
-from datetime import date, datetime, timedelta
-from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-VERSION = "0.1.5"
-LIB = Path(__file__).resolve().parent / "calendar.js"
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import cache as calcache  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "shared"))
+from agent_core import ToolError, StateStore, emit_success, emit_error  # noqa: E402
+
+VERSION = "0.2.0"
+HELPER = Path(__file__).resolve().parents[3] / "native/dist/apple-desk-calendar"
+FIELDS = {"calendarId", "title", "start", "end", "allDay", "timeZone", "location", "notes", "url", "availability", "alarms", "recurrence"}
 
 
-def wake_calendar():
-    """Nudge Calendar.app awake without stealing focus. Safe when already running."""
+class Parser(argparse.ArgumentParser):
+    def error(self, message):
+        raise ToolError("INVALID_ARGUMENT", message)
+
+
+def local_zone():
+    """Read public system timezone rules, including future DST transitions."""
     try:
-        subprocess.run(["open", "-ga", "Calendar"], capture_output=True, timeout=5)
-    except (OSError, subprocess.TimeoutExpired):
-        pass
+        with open("/etc/localtime", "rb") as stream:
+            return ZoneInfo.from_file(stream)
+    except OSError as exc:
+        raise ToolError("INVALID_TIME_ZONE", "Cannot read system time zone; supply --time-zone.") from exc
 
 
-GAPS = [
-    "Direct EventKit is not used. A command-line binary has no NSCalendarsUsageDescription, so macOS often will not show the Calendars privacy prompt for the binary. This CLI asks Calendar.app over Apple Events. The usual grant is Automation (Grok Bot or Grok Bot Helper → Calendar). If Calendar still refuses the data, also enable Grok Bot and Grok Bot Helper under Privacy & Security → Calendars, then quit and reopen Grok Bot.",
-    "Reads are the default. create, update, and delete are the only mutations. delete removes one event and refuses without --force. There is no delete-all.",
-    "show returns attendeeCount and alarmCount only. It does not list attendees, send invites, RSVP, or propose a new time. It does not create alarms, set travel time, or change availability.",
-    "Recurrence on show is a small object (summary, and frequency or until when Calendar exposes them). This CLI does not create or edit a series, and it does not target one occurrence versus the whole series.",
-    "Events cannot be moved between calendars. update changes fields on the event's current calendar only.",
-    "Subscribed and read-only calendars (holidays, birthdays, some shared calendars) can be listed but not written.",
-    "list and search use the local index (~/.cache/grok-calendar) when present. Pass --live to read Calendar.app. Pass --calendar-id when two calendars share a name. A calendar with more than 800 overlapping events in the window is refused.",
-    "show, update, and delete look up one uid by scanning calendars. That can be slow on large accounts.",
-    "Google, Exchange, and iCloud calendars appear only when they are already in Calendar.app. This is not the Google Calendar connector and not iCloud.com.",
-    "Focus filters, widgets, notifications, and conference-link parsing are out of scope. url is returned on show when Calendar exposes it.",
-]
-
-AUTH_HINT = (
-    "If a dialog is on screen: “Grok Bot” wants access to control “Calendar”. Click Allow once.\n"
-    "If it is gone, or Automation was denied: System Settings → Privacy & Security → Automation → Grok Bot (and Grok Bot Helper) → turn Calendar on.\n"
-    "If Calendar still will not list events: System Settings → Privacy & Security → Calendars → enable Grok Bot and Grok Bot Helper, then quit and reopen Grok Bot.\n"
-    "Do not toggle repeatedly. One change, then run doctor again. Do not retry doctor in a loop while AFK."
-)
-
-# Doctor stays lean (names only). Heavy list/search can take longer per calendar.
-DOCTOR_TIMEOUT = 25
-DEFAULT_TIMEOUT = 12
-NAME_TIMEOUT = 12
-LONG_TIMEOUT = 36
-
-
-def parse_stamp(value):
-    """Offline check. YYYY-MM-DD or YYYY-MM-DD HH:MM. Does not call Calendar."""
-    raw = (value or "").strip()
-    if not raw:
+def zone(name=None):
+    if name is None:
         return None
-    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d"):
+    try:
+        return ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError, TypeError) as exc:
+        raise ToolError("INVALID_TIME_ZONE", f"Unknown IANA time zone: {name!r}.") from exc
+
+
+def stamp(value, tz=None, all_day=False):
+    """Reject normalized dates, nonexistent local times, and ambiguous wall times."""
+    if not isinstance(value, str):
+        raise ToolError("INVALID_INPUT", "Dates must be strings.")
+    text = value.strip().replace(" ", "T", 1)
+    if all_day:
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+            raise ToolError("INVALID_INPUT", "All-day dates must be YYYY-MM-DD; end is exclusive.")
         try:
-            return datetime.strptime(raw, fmt)
-        except ValueError:
-            continue
-    return False
-
-
-def die(code, error, message, as_json):
-    authish = error in ("automation_denied", "automation_timeout", "calendar_tcc")
-    payload = {
-        "ok": False,
-        "tool": "grok-calendar",
-        "version": VERSION,
-        "error": error,
-        "code": code,
-        "message": message,
-    }
-    if authish:
-        payload["hint"] = AUTH_HINT
-        payload["settings"] = AUTH_HINT
-    if as_json:
-        print(json.dumps(payload))
-    else:
-        print(f"grok-calendar: {error}", file=sys.stderr)
-        if message:
-            print(message, file=sys.stderr)
-        if authish:
-            print(AUTH_HINT, file=sys.stderr)
-    raise SystemExit(code)
-
-
-def call_jxa_result(payload, timeout):
-    """Like call_jxa, but returns an error object instead of exiting."""
-    proc = subprocess.run(
-        ["perl", "-e", "alarm shift @ARGV; exec @ARGV", str(timeout), "osascript", "-l", "JavaScript", str(LIB), "--", json.dumps(payload)],
-        capture_output=True,
-        text=True,
-    )
-    blob = ((proc.stderr or "") + "\n" + (proc.stdout or "")).strip()
-    if proc.returncode in (-14, 142) or "Alarm clock" in blob:
-        return {"ok": False, "error": "automation_timeout", "code": 4, "message": f"Timed out after {timeout}s"}
-    if proc.returncode != 0:
-        if "-1743" in blob or "Not authorized" in blob:
-            return {"ok": False, "error": "automation_denied", "code": 3, "message": blob[:240]}
-        if "-1712" in blob or "timed out" in blob.lower():
-            return {"ok": False, "error": "automation_timeout", "code": 4, "message": blob[:240]}
-        return {"ok": False, "error": "calendar_error", "code": 1, "message": (blob or "osascript failed")[:240]}
-    raw = (proc.stdout or "").strip()
-    if not raw:
-        return {"ok": False, "error": "calendar_error", "code": 1, "message": "empty response"}
+            return datetime.combine(date.fromisoformat(text), datetime.min.time(), tz or local_zone())
+        except ValueError as exc:
+            raise ToolError("INVALID_INPUT", "Invalid all-day date.") from exc
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,6})?)?(?:Z|[+-]\d{2}:\d{2})?)?", text):
+        raise ToolError("INVALID_INPUT", "Use ISO 8601 or YYYY-MM-DD HH:MM with --time-zone.")
     try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        return {"ok": False, "error": "calendar_error", "code": 1, "message": "non-JSON"}
-    return data
+        result = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ToolError("INVALID_INPUT", f"Invalid date: {value!r}.") from exc
+    if result.tzinfo is not None:
+        return result
+    if tz is None:
+        raise ToolError("INVALID_INPUT", "Local timed dates require --time-zone or timeZone; otherwise supply an explicit UTC offset.")
+    candidates = []
+    for fold in (0, 1):
+        candidate = result.replace(tzinfo=tz, fold=fold)
+        if candidate.astimezone(timezone.utc).astimezone(tz).replace(tzinfo=None) == result:
+            if not any(c.timestamp() == candidate.timestamp() for c in candidates):
+                candidates.append(candidate)
+    if not candidates:
+        raise ToolError("INVALID_INPUT", "This local time does not exist due to a daylight-saving transition.")
+    if len(candidates) > 1:
+        raise ToolError("AMBIGUOUS_TIME", "This local time occurs twice; supply an explicit UTC offset.")
+    return candidates[0]
 
 
-def calendar_count():
-    data = call_jxa_result({"op": "doctor"}, DOCTOR_TIMEOUT)
-    if not data.get("ok"):
-        return data
+def iso(value):
+    return value.isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+
+def integer(value, name, minimum=0, maximum=100000):
+    if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
+        raise ToolError("INVALID_INPUT", f"{name} must be an integer from {minimum} through {maximum}.")
+    return value
+
+
+def json_object(path):
     try:
-        return {"ok": True, "calendars": int(data.get("calendars") or 0), "doctor": data}
-    except (TypeError, ValueError):
-        return {"ok": False, "error": "calendar_error", "message": "doctor did not return a count"}
+        raw = sys.stdin.read(1_048_577) if path == "-" else Path(path).expanduser().read_text(encoding="utf-8")
+        if len(raw.encode()) > 1_048_576:
+            raise ToolError("INVALID_INPUT", "Input JSON exceeds 1 MiB.")
+        value = json.loads(raw)
+    except (OSError, ValueError) as exc:
+        raise ToolError("INVALID_INPUT", "Cannot read valid input JSON.") from exc
+    if not isinstance(value, dict):
+        raise ToolError("INVALID_INPUT", "Input must be a JSON object.")
+    return value
 
 
-def call_jxa(payload, timeout, as_json):
-    proc = subprocess.run(
-        ["perl", "-e", "alarm shift @ARGV; exec @ARGV", str(timeout), "osascript", "-l", "JavaScript", str(LIB), "--", json.dumps(payload)],
-        capture_output=True,
-        text=True,
-    )
-    blob = ((proc.stderr or "") + "\n" + (proc.stdout or "")).strip()
-    if proc.returncode in (-14, 142) or "Alarm clock" in blob:
-        die(4, "automation_timeout", f"Timed out after {timeout}s waiting for Calendar. A permission dialog may be waiting. Stop; do not retry in a loop.", as_json)
-    if proc.returncode != 0:
-        if "kTCCServiceCalendar" in blob or "Calendar access" in blob:
-            die(3, "calendar_tcc", blob, as_json)
-        if "-1743" in blob or "Not authorized to send Apple events" in blob:
-            die(3, "automation_denied", blob, as_json)
-        if "-1712" in blob or "timed out" in blob.lower():
-            die(4, "automation_timeout", blob, as_json)
-        die(1, "calendar_error", blob or "osascript failed", as_json)
-    raw = (proc.stdout or "").strip()
-    if not raw:
-        die(1, "calendar_error", "Calendar returned an empty response", as_json)
+def parse_embedded_json(text, name):
     try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        die(1, "calendar_error", "Calendar returned non-JSON: " + raw[:400], as_json)
-    if data.get("error") in ("automation_denied", "calendar_tcc"):
-        die(3, data["error"], data.get("message") or "", as_json)
-    return data
+        return json.loads(text)
+    except ValueError as exc:
+        raise ToolError("INVALID_INPUT", f"{name} must contain JSON.") from exc
 
 
-def emit(data, as_json, text_fn):
-    if not data.get("ok", False):
-        soft = {
-            "needs_force", "unsupported", "missing_target", "missing_title",
-            "missing_calendar", "missing_change", "missing_query", "ambiguous",
-            "bad_request", "not_found", "query_too_broad", "read_only_calendar",
-        }
-        code = 2 if data.get("error") in soft else 1
-        if data.get("error") in ("automation_denied", "calendar_tcc"):
-            code = 3
-        if data.get("error") == "automation_timeout":
-            code = 4
-        if as_json:
-            data.setdefault("tool", "grok-calendar")
-            data.setdefault("version", VERSION)
-            print(json.dumps(data))
+def validate_reference(target, options):
+    if not isinstance(target, str) or not target.strip():
+        raise ToolError("INVALID_INPUT", "Supply --uid EVENT or an event reference.")
+    if target.startswith("event:"):
+        try:
+            raw = target[6:]
+            ref = json.loads(base64.b64decode(raw + "=" * (-len(raw) % 4), altchars=b"-_", validate=True))
+            if not isinstance(ref, dict) or not isinstance(ref.get("id"), str) or not ref["id"]:
+                raise ValueError("missing ID")
+        except (ValueError, TypeError) as exc:
+            raise ToolError("INVALID_INPUT", "Malformed event reference.") from exc
+        if options.get("calendarId") and ref.get("calendarId") and options["calendarId"] != ref["calendarId"]:
+            raise ToolError("STALE_REFERENCE", "Calendar ID conflicts with the event reference.")
+        if ref.get("occurrence"):
+            saved = stamp(ref["occurrence"])
+            if options.get("occurrence") and abs(stamp(options["occurrence"]).timestamp() - saved.timestamp()) >= .5:
+                raise ToolError("STALE_REFERENCE", "Occurrence conflicts with the event reference.")
+            if not options.get("scope"):
+                raise ToolError("INVALID_INPUT", "A recurring mutation requires --scope this|future.")
+    if options.get("scope") not in (None, "this", "future"):
+        raise ToolError("INVALID_INPUT", "scope must be this or future.")
+
+
+def event_input(args, creating):
+    value = json_object(args.input) if args.input else {}
+    for attr, key in (("title", "title"), ("start", "start"), ("end", "end"), ("location", "location"), ("notes", "notes"), ("url", "url"), ("availability", "availability"), ("time_zone", "timeZone")):
+        if getattr(args, attr, None) is not None:
+            value[key] = getattr(args, attr)
+    if args.all_day:
+        value["allDay"] = True
+    if args.timed:
+        value["allDay"] = False
+    if args.alarms is not None:
+        value["alarms"] = parse_embedded_json(args.alarms, "alarms")
+    if args.recurrence is not None:
+        value["recurrence"] = parse_embedded_json(args.recurrence, "recurrence")
+    if creating and args.calendar_id:
+        value["calendarId"] = args.calendar_id
+    unknown = set(value) - FIELDS
+    if unknown:
+        raise ToolError("INVALID_INPUT", "Unsupported event fields: " + ", ".join(sorted(unknown)))
+    for key in ("calendarId", "title", "timeZone"):
+        if key in value and (not isinstance(value[key], str) or not value[key].strip()):
+            raise ToolError("INVALID_INPUT", f"{key} must be a nonempty string.")
+    if "allDay" in value and not isinstance(value["allDay"], bool):
+        raise ToolError("INVALID_INPUT", "allDay must be boolean.")
+    for key in ("notes", "location", "url"):
+        if key in value and value[key] is not None and not isinstance(value[key], str):
+            raise ToolError("INVALID_INPUT", f"{key} must be a string or null.")
+    if value.get("url") is not None and not re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", value["url"]):
+        raise ToolError("INVALID_INPUT", "url must be an absolute URL.")
+    if "availability" in value and value["availability"] not in {"busy", "free", "tentative", "unavailable"}:
+        raise ToolError("INVALID_INPUT", "Invalid availability.")
+    tz = zone(value.get("timeZone"))
+    all_day = value.get("allDay", False)
+    if all_day:
+        # EventKit all-day dates are floating system-calendar dates, not instants in a requested zone.
+        tz = local_zone()
+        value.pop("timeZone", None)
+    if creating:
+        if not value.get("title") or not value.get("start"):
+            raise ToolError("INVALID_INPUT", "Creation requires title and start.")
+        if not value.get("calendarId") and not args.calendar:
+            raise ToolError("INVALID_INPUT", "Creation requires --calendar-id, calendarId, or a unique --calendar name.")
+        value.setdefault("allDay", False)
+    elif not value:
+        raise ToolError("INVALID_INPUT", "Provide at least one event change.")
+    if not creating and "allDay" in value and not all(key in value for key in ("start", "end")):
+        raise ToolError("INVALID_INPUT", "Changing allDay requires both start and end.")
+    parsed = {}
+    for key in ("start", "end"):
+        if key in value:
+            parsed[key] = stamp(value[key], tz, all_day)
+            value[key] = parsed[key].date().isoformat() if all_day else iso(parsed[key])
+    if creating and "end" not in value:
+        start = parsed["start"]
+        if all_day:
+            value["end"] = (start.date() + timedelta(days=1)).isoformat()
+            parsed["end"] = stamp(value["end"], tz, True)
         else:
-            print(f"grok-calendar: {data.get('error')}: {data.get('message', '')}", file=sys.stderr)
-            for row in data.get("matches") or []:
-                label = row.get("title") or row.get("name") or "(untitled)"
-                ident = row.get("uid") or row.get("id") or ""
-                extra = row.get("start") or ""
-                print(f"  {extra}  {label}  {ident}".strip(), file=sys.stderr)
-            if data.get("error") in ("automation_denied", "calendar_tcc"):
-                print(AUTH_HINT, file=sys.stderr)
-        raise SystemExit(code)
-    if as_json:
-        data.setdefault("tool", "grok-calendar")
-        data.setdefault("version", VERSION)
-        print(json.dumps(data))
-    else:
-        text_fn(data)
+            parsed["end"] = datetime.fromtimestamp(start.timestamp() + 3600, timezone.utc)
+            value["end"] = iso(parsed["end"])
+    if "start" in parsed and "end" in parsed and parsed["end"].timestamp() <= parsed["start"].timestamp():
+        raise ToolError("INVALID_INPUT", "end must follow start; all-day end is exclusive.")
+    if "alarms" in value:
+        alarms = value["alarms"]
+        if not isinstance(alarms, list) or len(alarms) > 20:
+            raise ToolError("INVALID_INPUT", "alarms must be an array of at most 20 objects.")
+        for alarm in alarms:
+            if not isinstance(alarm, dict) or len(alarm) != 1:
+                raise ToolError("INVALID_INPUT", "Each alarm requires exactly minutesBefore or at.")
+            if "minutesBefore" in alarm:
+                integer(alarm["minutesBefore"], "minutesBefore", maximum=525600)
+            elif "at" in alarm:
+                alarm["at"] = iso(stamp(alarm["at"], tz))
+            else:
+                raise ToolError("INVALID_INPUT", "Unsupported alarm field.")
+    if value.get("recurrence") is not None:
+        recurrence = value["recurrence"]
+        if not isinstance(recurrence, dict) or set(recurrence) - {"frequency", "interval", "count", "until", "weekdays"} or recurrence.get("frequency") not in {"daily", "weekly", "monthly", "yearly"}:
+            raise ToolError("INVALID_INPUT", "Invalid recurrence frequency or fields.")
+        integer(recurrence.get("interval", 1), "interval", minimum=1, maximum=1000)
+        if "count" in recurrence and "until" in recurrence:
+            raise ToolError("INVALID_INPUT", "Use recurrence count or until, not both.")
+        if "count" in recurrence:
+            integer(recurrence["count"], "count", minimum=1)
+        if "until" in recurrence:
+            until = stamp(recurrence["until"], tz or (local_zone() if all_day else None))
+            if parsed.get("start") and until.timestamp() < parsed["start"].timestamp():
+                raise ToolError("INVALID_INPUT", "Recurrence end precedes event start.")
+            recurrence["until"] = iso(until)
+        if "weekdays" in recurrence:
+            days = recurrence["weekdays"]
+            if recurrence["frequency"] == "daily" or not isinstance(days, list) or not 1 <= len(days) <= 7:
+                raise ToolError("INVALID_INPUT", "weekdays requires 1...7 Sunday-based weekday numbers, except daily recurrence.")
+            for day in days:
+                integer(day, "weekday", minimum=1, maximum=7)
+            if len(days) != len(set(days)):
+                raise ToolError("INVALID_INPUT", "Duplicate recurrence weekdays.")
+    return value
 
 
-def clock(value):
-    if not value:
-        return "?"
-    # 2026-10-03T09:00:00-05:00 → 2026-10-03 09:00
-    text = str(value)
-    if len(text) >= 16 and text[10] == "T":
-        return text[:10] + " " + text[11:16]
-    return text
-
-
-def print_doctor(data):
-    app = data.get("calendarApp") or {}
-    print(f"grok-calendar {VERSION}  ok")
-    print("backend: Calendar.app JXA")
-    print(f"automation: {data.get('automation')}")
-    print("writes: off unless you run create, update, or delete --force")
-    print(f"Calendar {app.get('version')} ({app.get('id')})")
-    print(f"calendars: {data.get('calendars')}   writable: {data.get('writableCalendars') if data.get('writableCalendars') is not None else '(see calendars)'}")
-
-
-def print_calendars(data):
-    print(f"{data.get('count')} calendars")
-    for row in data.get("calendars") or []:
-        flag = "writable" if row.get("writable") else "read-only"
-        print(f"  {row.get('name')}  {flag}  {row.get('id')}")
-
-
-def print_events(data):
-    window = f"{data.get('from')} → {data.get('to')}"
-    src = f"  [{data.get('source')}]" if data.get("source") else ""
-    if data.get("query"):
-        print(f"{data.get('count')} match(es) for {data.get('query')!r}  {window}{src}")
-    else:
-        print(f"{data.get('count')} event(s)  {window}{src}")
-    for row in data.get("events") or []:
-        if row.get("allDay"):
-            when = str(row.get("start") or "")[:10] + " all-day"
-        else:
-            when = clock(row.get("start")) + "–" + clock(row.get("end"))[11:16]
-        print(f"  {when}  {row.get('title')}  · {row.get('calendar')}")
-    if data.get("truncated"):
-        print("(showing the first matches; pass --limit or a narrower range)")
-
-
-def print_show(data):
-    ev = data.get("event") or {}
-    print(ev.get("title") or "(no title)")
-    print(f"uid: {ev.get('uid')}")
-    if ev.get("allDay"):
-        print(f"when: {str(ev.get('start') or '')[:10]} all-day → {str(ev.get('end') or '')[:10]}")
-    else:
-        print(f"when: {clock(ev.get('start'))} – {clock(ev.get('end'))}")
-    print(f"calendar: {ev.get('calendar')}  ({'writable' if ev.get('writable') else 'read-only'})")
-    if ev.get("location"):
-        print(f"location: {ev.get('location')}")
-    if ev.get("status"):
-        print(f"status: {ev.get('status')}")
-    if ev.get("url"):
-        print(f"url: {ev.get('url')}")
-    if ev.get("recurrence"):
-        print(f"recurrence: {ev.get('recurrence')}")
-    if ev.get("notes"):
-        print("notes: " + str(ev.get("notes"))[:400])
-
-
-def print_write(data):
-    if data.get("deleted"):
-        print(f"deleted {data.get('title')}  {data.get('uid')}  · {data.get('calendar')}")
-        return
-    verb = "created" if data.get("created") else "updated"
-    print(f"{verb} {data.get('title')}  {clock(data.get('start'))}  {data.get('uid')}  · {data.get('calendar')}")
-
-
-def add_json(sp):
-    sp.add_argument("--json", action="store_true")
-
-
-def add_range(sp, default_days):
-    sp.add_argument("--from", dest="from_date", help="YYYY-MM-DD or YYYY-MM-DD HH:MM")
-    sp.add_argument("--to", dest="to_date", help="YYYY-MM-DD (inclusive) or YYYY-MM-DD HH:MM")
-    sp.add_argument("--days", type=int, default=None, help=f"window length when --to is omitted (default {default_days})")
-    sp.add_argument("--today", action="store_true")
-    sp.add_argument("--calendar", help="exact calendar name; resolved to indexes, one Apple Event each")
-    sp.add_argument("--calendar-id", dest="calendar_id", help="ignored for live list; indexes are the portable key")
-    sp.add_argument("--index", type=int, default=None, help="one calendar index from doctor/name-at")
-    sp.add_argument("--limit", type=int, default=25)
-
-
-def resolve_range(args, default_days, search=False):
-    today = date.today()
-    today_flag = getattr(args, "today", False)
-    from_date = getattr(args, "from_date", None)
-    to_date = getattr(args, "to_date", None)
-    days_arg = getattr(args, "days", None)
-    if today_flag:
-        start = today
-        end = today
-    else:
-        if from_date:
-            start = parse_day(from_date)
-        elif search and days_arg is None:
-            start = today - timedelta(days=30)
-        else:
-            start = today
-        if to_date:
-            end = parse_day(to_date)
-        elif search and days_arg is None and not from_date:
-            end = today + timedelta(days=180)
-        else:
-            days = days_arg if days_arg is not None else default_days
-            if days < 1 or days > 366:
-                die(2, "bad_request", "--days must be 1..366.", False)
-            end = start + timedelta(days=days - 1)
-    return start.isoformat(), end.isoformat()
-
-
-def parse_day(value):
-    text = value.strip()
+def native(action, options=None, value=None, target=None):
+    if not HELPER.is_file() or not os.access(HELPER, os.X_OK):
+        raise ToolError("BACKEND_UNAVAILABLE", "Owned EventKit helper is missing. Run native/build.sh and reinstall Apple Desk.", {"path": str(HELPER)})
+    request = {"action": action, "options": options or {}}
+    if value is not None:
+        request["input"] = value
+    if target is not None:
+        request["target"] = target
+    mutating = action in {"create", "update", "delete"}
     try:
-        if len(text) >= 10:
-            return datetime.strptime(text[:10], "%Y-%m-%d").date()
-    except ValueError:
-        pass
-    die(2, "bad_request", f"Could not read date {value!r}. Use YYYY-MM-DD.", False)
+        proc = subprocess.run([str(HELPER)], input=json.dumps(request, allow_nan=False), text=True, capture_output=True, timeout=100 if action == "permissions" else 45)
+    except subprocess.TimeoutExpired as exc:
+        raise ToolError("WRITE_STATUS_UNKNOWN" if mutating else "TIMEOUT", "Native calendar write timed out; inspect current state before retrying." if mutating else "Native calendar read timed out; no calendar write was attempted.", {"readOnly": not mutating, "writeMayHaveTakenEffect": mutating}) from exc
+    except OSError as exc:
+        raise ToolError("BACKEND_UNAVAILABLE", str(exc)) from exc
+    try:
+        response = json.loads(proc.stdout)
+        if not isinstance(response, dict) or not isinstance(response.get("ok"), bool):
+            raise ValueError("invalid response envelope")
+    except ValueError as exc:
+        raise ToolError("WRITE_STATUS_UNKNOWN" if mutating else "BACKEND_ERROR", "Native calendar helper returned an invalid response.", {"exitCode": proc.returncode, "readOnly": not mutating, "writeMayHaveTakenEffect": mutating}) from exc
+    if not response["ok"]:
+        error = response.get("error") or {}
+        if not isinstance(error, dict):
+            raise ToolError("WRITE_STATUS_UNKNOWN" if mutating else "BACKEND_ERROR", "Native helper returned malformed error data.", {"readOnly": not mutating, "writeMayHaveTakenEffect": mutating})
+        details = error.get("details") if isinstance(error.get("details"), dict) else {}
+        details.setdefault("readOnly", not mutating)
+        details.setdefault("writeMayHaveTakenEffect", mutating and error.get("code") in {"NATIVE_ERROR", "WRITE_STATUS_UNKNOWN", "VERIFICATION_FAILED", "ENCODING_ERROR"})
+        code = error.get("code", "BACKEND_ERROR")
+        if mutating and code == "ENCODING_ERROR":
+            details["nativeCode"] = code
+            code = "WRITE_STATUS_UNKNOWN"
+        raise ToolError(code, error.get("message", "Calendar operation failed."), details)
+    if proc.returncode != 0 or not isinstance(response.get("data"), dict):
+        raise ToolError("WRITE_STATUS_UNKNOWN" if mutating else "BACKEND_ERROR", "Native helper returned an inconsistent success response.", {"readOnly": not mutating, "writeMayHaveTakenEffect": mutating})
+    return response["data"]
+
+
+def options_for(args):
+    options = {}
+    for attr, key in (("calendar_id", "calendarId"), ("calendar", "calendar"), ("time_zone", "timeZone"), ("scope", "scope")):
+        if getattr(args, attr, None) is not None:
+            options[key] = getattr(args, attr)
+    if getattr(args, "occurrence", None):
+        options["occurrence"] = iso(stamp(args.occurrence, zone(getattr(args, "time_zone", None))))
+    return options
+
+
+def ranges(args, default_days=7, search=False):
+    tz = zone(args.time_zone) or local_zone()
+    today = datetime.now(tz).date()
+    days = args.days if args.days is not None else default_days
+    integer(days, "days", minimum=1, maximum=366)
+    if args.today and (args.from_date or args.to_date or args.days is not None):
+        raise ToolError("INVALID_INPUT", "--today cannot be combined with --from, --to, or --days.")
+    start_text = args.from_date or ((today - timedelta(days=30)) if search and args.days is None else today).isoformat()
+    start = stamp(start_text, tz)
+    if args.today:
+        start = stamp(today.isoformat(), tz)
+        end = stamp((today + timedelta(days=1)).isoformat(), tz)
+    elif args.to_date:
+        end = stamp(args.to_date, tz)
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", args.to_date):
+            end = stamp((date.fromisoformat(args.to_date) + timedelta(days=1)).isoformat(), tz)
+    else:
+        end = start + timedelta(days=days)
+    if end.timestamp() <= start.timestamp() or end.timestamp() - start.timestamp() > 366 * 86400 + 3600:
+        raise ToolError("INVALID_INPUT", "Query range must be positive and at most 366 days.")
+    integer(args.limit, "limit", minimum=1, maximum=1000)
+    integer(args.offset, "offset", maximum=10000000)
+    return {"from": iso(start), "to": iso(end), "limit": args.limit, "offset": args.offset}
 
 
 def build_parser():
-    p = argparse.ArgumentParser(prog="grok-calendar", description="Calendar.app CLI (JXA). Read by default.")
+    p = Parser(prog="grok-calendar", description="Apple Desk Calendar: local EventKit, structured JSON, explicit writes.")
+    p.add_argument("--json", action="store_true", help="JSON is the default output format")
     p.add_argument("--version", action="version", version=f"grok-calendar {VERSION}")
-    sub = p.add_subparsers(dest="cmd", required=True)
-
-    sp = sub.add_parser("doctor", help="Check Automation access and calendar counts")
-    add_json(sp)
-
-    sp = sub.add_parser("calendars", help="List calendar names, one index per Apple Event")
-    sp.add_argument("--ids", action="store_true", help="accepted; ids are indexes")
-    sp.add_argument("--full", action="store_true", help="accepted; still names and indexes only")
-    add_json(sp)
-
-    sp = sub.add_parser("name-at", help="Name of one calendar index")
-    sp.add_argument("--index", type=int, required=True)
-    add_json(sp)
-
-    sp = sub.add_parser("list", help="Events overlapping a date range (index by default)")
-    add_range(sp, 7)
-    sp.add_argument("--live", action="store_true", help="query Calendar.app instead of the local index")
-    sp.add_argument("--light", action="store_true", help="titles and times only; do not read locations")
-    sp.add_argument("--all", action="store_true", help="accepted for compatibility; live list already includes every calendar")
-    add_json(sp)
-
-    sp = sub.add_parser("search", help="Find events by title (index by default)")
-    sp.add_argument("query")
-    add_range(sp, 180)
-    sp.add_argument("--live", action="store_true", help="query Calendar.app instead of the local index")
-    sp.add_argument("--all", action="store_true", help="accepted for compatibility; live list already includes every calendar")
-    add_json(sp)
-
-    sp = sub.add_parser("show", help="One event by --uid, or one exact title match")
-    sp.add_argument("query", nargs="?")
-    sp.add_argument("--uid")
-    sp.add_argument("--from", dest="from_date")
-    sp.add_argument("--to", dest="to_date")
-    sp.add_argument("--calendar")
-    add_json(sp)
-
-    sp = sub.add_parser("create", help="Create one event (mutation)")
-    sp.add_argument("--calendar", required=True)
-    sp.add_argument("--title", required=True)
-    sp.add_argument("--start", required=True, help="YYYY-MM-DD or YYYY-MM-DD HH:MM")
-    sp.add_argument("--end", help="defaults to one hour, or next day if --all-day")
-    sp.add_argument("--all-day", action="store_true")
-    sp.add_argument("--location")
-    sp.add_argument("--notes")
-    sp.add_argument("--dry-run", action="store_true", help="Validate args only; do not call Calendar.app")
-    add_json(sp)
-
-    sp = sub.add_parser("update", help="Change one event by uid (mutation, same calendar)")
-    sp.add_argument("--uid", required=True)
-    sp.add_argument("--title")
-    sp.add_argument("--start")
-    sp.add_argument("--end")
-    sp.add_argument("--all-day", action="store_true")
-    sp.add_argument("--timed", action="store_true", help="clear all-day")
-    sp.add_argument("--location")
-    sp.add_argument("--notes")
-    sp.add_argument("--dry-run", action="store_true", help="Validate only; do not call Calendar.app")
-    add_json(sp)
-
-    sp = sub.add_parser("delete", help="Delete one event by uid")
-    sp.add_argument("--uid", required=True)
-    sp.add_argument("--force", action="store_true")
-    sp.add_argument("--dry-run", action="store_true", help="Do not call Calendar.app")
-    add_json(sp)
-
-    sp = sub.add_parser("gaps", help="What Calendar.app can do that this CLI cannot")
-    add_json(sp)
+    sub = p.add_subparsers(dest="cmd", required=True, parser_class=Parser)
+    def command(name, **kw):
+        sp = sub.add_parser(name, **kw); sp.add_argument("--json", action="store_true"); return sp
+    def calendar_args(sp):
+        sp.add_argument("--calendar", help="exact unique calendar title")
+        sp.add_argument("--calendar-id", help="stable EventKit calendar ID")
+        sp.add_argument("--time-zone", help="IANA zone for local timestamps")
+    def range_args(sp):
+        calendar_args(sp)
+        sp.add_argument("--from", dest="from_date"); sp.add_argument("--to", dest="to_date", help="date-only is inclusive; timestamp is exclusive")
+        sp.add_argument("--days", type=int); sp.add_argument("--today", action="store_true")
+        sp.add_argument("--limit", type=int, default=100); sp.add_argument("--offset", type=int, default=0)
+        sp.add_argument("--live", action="store_true", help="compatibility: all reads are live")
+        sp.add_argument("--light", action="store_true"); sp.add_argument("--all", action="store_true")
+        sp.add_argument("--index", type=int, help="legacy read-only calendar index; real ID returned")
+    for name in ("doctor", "auth-status", "gaps"):
+        command(name)
+    sp = command("permissions"); sp.add_argument("operation", choices=["request"])
+    sp = command("calendars"); sp.add_argument("--ids", action="store_true"); sp.add_argument("--full", action="store_true")
+    sp = command("name-at"); sp.add_argument("--index", type=int, required=True)
+    for name in ("list", "events", "search", "free"):
+        sp = command(name); range_args(sp)
+        if name == "search": sp.add_argument("query")
+        if name == "free": sp.add_argument("--duration", default="30m")
+    for name in ("show", "read"):
+        sp = command(name); sp.add_argument("query", nargs="?"); sp.add_argument("--uid"); sp.add_argument("--occurrence"); range_args(sp)
+    for name in ("create", "update"):
+        sp = command(name); calendar_args(sp); sp.add_argument("--input")
+        for field in ("title", "start", "end", "location", "notes", "url", "availability", "alarms", "recurrence"):
+            sp.add_argument("--" + field)
+        mode = sp.add_mutually_exclusive_group(); mode.add_argument("--all-day", action="store_true"); mode.add_argument("--timed", action="store_true")
+        sp.add_argument("--dry-run", action="store_true")
+        if name == "create": sp.add_argument("--idempotency-key")
+        else:
+            sp.add_argument("target", nargs="?"); sp.add_argument("--uid"); sp.add_argument("--occurrence"); sp.add_argument("--scope", choices=["this", "future"])
+    sp = command("delete"); calendar_args(sp); sp.add_argument("target", nargs="?"); sp.add_argument("--uid"); sp.add_argument("--occurrence"); sp.add_argument("--scope", choices=["this", "future"]); sp.add_argument("--force", action="store_true"); sp.add_argument("--dry-run", action="store_true")
     return p
 
 
-def live_indexes(index, name, as_json):
-    if index is not None:
-        return [index]
-    if not name:
-        die(2, "needs_calendar", "Pass --index or --calendar. A live list does not walk every calendar in one Apple Event.", as_json)
-    counted = calendar_count()
-    if not counted.get("ok"):
-        die(4 if counted.get("code") == 4 else 1, counted.get("error") or "calendar_error", counted.get("message") or "", as_json)
-    found = []
-    for i in range(counted["calendars"]):
-        row = call_jxa_result({"op": "calendarAt", "index": i}, NAME_TIMEOUT)
-        if row.get("ok") and (row.get("name") or "") == name:
-            found.append(i)
-    if not found:
-        die(2, "not_found", f"No calendar named {name!r}.", as_json)
-    return found
+def execute(args):
+    command = args.cmd
+    if command == "gaps":
+        return {"backend": "eventkit", "gaps": ["Meeting invitations and RSVP changes are unsupported; attendees are read-only.", "Verification concerns the local store, not remote account synchronization.", "Offline dry runs do not verify target existence, permissions, recurrence state, or calendar writability.", "Event IDs can change after account synchronization or moves; refresh stale references.", "Mail and Calendar permissions are attributed by macOS to the calling host or signed helper; ad-hoc binary updates may require renewed grants."]}
+    if command in {"doctor", "auth-status", "permissions", "calendars"}:
+        return native(command)
+    if command == "name-at":
+        rows = native("calendars")["calendars"]
+        if not 0 <= args.index < len(rows):
+            raise ToolError("NOT_FOUND", "Calendar index is out of range.")
+        return dict(rows[args.index], index=args.index, unstableIndex=True)
+    options = options_for(args)
+    if command in {"list", "events", "search", "free"}:
+        options.update(ranges(args, 180 if command == "search" else 7, command == "search"))
+        if args.index is not None:
+            if args.calendar or args.calendar_id:
+                raise ToolError("INVALID_INPUT", "--index cannot be combined with a calendar name or ID.")
+            rows = native("calendars")["calendars"]
+            if not 0 <= args.index < len(rows): raise ToolError("NOT_FOUND", "Calendar index is out of range.")
+            options["calendarId"] = rows[args.index]["id"]
+        options["light"] = args.light
+        if command == "search":
+            if not args.query.strip(): raise ToolError("INVALID_INPUT", "Search query must be nonempty.")
+            options["query"] = args.query
+        if command == "free":
+            match = re.fullmatch(r"(\d+(?:\.\d+)?)(m|h)?", args.duration)
+            if not match: raise ToolError("INVALID_INPUT", "Use a duration such as 30m or 1h.")
+            duration = float(match[1]) * (60 if match[2] == "h" else 1)
+            if not math.isfinite(duration) or duration <= 0: raise ToolError("INVALID_INPUT", "Duration must be positive.")
+            options["durationMinutes"] = duration
+        return native("free" if command == "free" else "events", options)
+    if command in {"show", "read"}:
+        target = args.uid or (args.query if command == "read" else None)
+        if target:
+            return native("read", options, target=target)
+        if not args.query or not args.query.strip(): raise ToolError("INVALID_INPUT", "Supply --uid EVENT or an exact event title.")
+        options.update(ranges(args, 180, True)); options.update(exactTitle=args.query, limit=2, offset=0)
+        result = native("events", options)
+        if result["total"] != 1: raise ToolError("AMBIGUOUS_REFERENCE" if result["total"] else "NOT_FOUND", "Event title did not resolve uniquely. Use an event reference.", {"matches": result["events"]})
+        return {"event": result["events"][0]}
+    creating = command == "create"
+    value = event_input(args, creating) if command in {"create", "update"} else None
+    if value and value.get("allDay"):
+        options.pop("timeZone", None)
+    target = None if creating else (args.uid or args.target)
+    if not creating:
+        if args.uid and args.target and args.uid != args.target: raise ToolError("INVALID_INPUT", "Conflicting --uid and positional target.")
+        validate_reference(target, options)
+    if args.dry_run:
+        return {"dryRun": True, "action": command, "event": value, "target": target, "options": options, "wouldCreate": creating, "wouldUpdate": command == "update", "wouldDelete": command == "delete", "calendarVerified": False, "targetVerified": False, "message": "Offline validation only. No permission request, calendar access, or mutation occurred."}
+    if command == "delete" and not args.force:
+        raise ToolError("CONFIRMATION_REQUIRED", "Delete requires --force. Use --dry-run to validate without calendar access.")
+    if creating:
+        if not args.idempotency_key: raise ToolError("INVALID_INPUT", "Creation requires --idempotency-key to prevent duplicate retries.")
+        return StateStore().perform(args.idempotency_key, "calendar.create", {"input": value, "options": options}, lambda: native("create", options, value), preflight=lambda: native("validate-create", options, value))
+    with StateStore().locked():
+        return native(command, options, value, target)
 
 
 def main(argv=None):
-    args = build_parser().parse_args(argv)
-    as_json = getattr(args, "json", False)
-    if args.cmd == "gaps":
-        data = {"ok": True, "tool": "grok-calendar", "version": VERSION, "gaps": GAPS}
-        emit(data, as_json, lambda d: print("\n".join("- " + g for g in d["gaps"])))
-        return
-
-    if args.cmd == "doctor":
-        data = call_jxa({"op": "doctor"}, DOCTOR_TIMEOUT, as_json)
-        data["version"] = VERSION
-        emit(data, as_json, print_doctor)
-        return
-    if args.cmd == "name-at":
-        data = call_jxa({"op": "calendarAt", "index": args.index}, NAME_TIMEOUT, as_json)
-        emit(data, as_json, lambda d: print(f"{d.get('index')}  {d.get('name')}"))
-        return
-    if args.cmd == "calendars":
-        counted = calendar_count()
-        if not counted.get("ok"):
-            die(4 if counted.get("code") == 4 else 1, counted.get("error") or "calendar_error", counted.get("message") or "", as_json)
-        rows = []
-        skipped = []
-        for i in range(counted["calendars"]):
-            row = call_jxa_result({"op": "calendarAt", "index": i}, NAME_TIMEOUT)
-            if row.get("ok"):
-                rows.append({"index": i, "id": i, "name": row.get("name") or "(unnamed)", "writable": None})
-            else:
-                skipped.append(i)
-        data = {"ok": True, "count": len(rows), "calendars": rows, "skippedIndexes": skipped, "tool": "grok-calendar", "version": VERSION}
-        emit(data, as_json, print_calendars)
-        return
-    if args.cmd == "list":
-        start, end = resolve_range(args, 7, search=False)
-        if not args.live:
-            data = calcache.list_events(start, end, args.calendar, None, args.limit)
-            if data.get("ok"):
-                emit(data, as_json, print_events)
-                return
-            # fall through to live when index missing
-        indexes = live_indexes(getattr(args, "index", None), getattr(args, "calendar", None), as_json)
-        events = []
-        skipped = []
-        truncated = False
-        for index in indexes:
-            piece = call_jxa_result({
-                "op": "list",
-                "from": start,
-                "to": end,
-                "calendarIndex": index,
-                "limit": args.limit,
-                "light": True,
-            }, LONG_TIMEOUT)
-            if not piece.get("ok"):
-                if piece.get("error") in ("automation_denied", "calendar_tcc"):
-                    die(3, piece["error"], piece.get("message") or "", as_json)
-                if len(indexes) == 1:
-                    code = 4 if piece.get("error") in ("timeout", "automation_timeout") else 1
-                    die(code, piece.get("error") or "calendar_error", piece.get("message") or "calendar list failed", as_json)
-                skipped.append({"index": index, "error": piece.get("error")})
-                continue
-            events.extend(piece.get("events") or [])
-            truncated = truncated or bool(piece.get("truncated"))
-        events.sort(key=lambda row: str(row.get("start") or ""))
-        data = {
-            "ok": True,
-            "from": start,
-            "to": end,
-            "count": len(events),
-            "truncated": truncated,
-            "skipped": skipped,
-            "events": events[: args.limit] if args.limit else events,
-            "source": "live",
-            "tool": "grok-calendar",
-            "version": VERSION,
-        }
-        emit(data, as_json, print_events)
-        return
-    if args.cmd == "search":
-        start, end = resolve_range(args, 180, search=True)
-        if not args.live:
-            data = calcache.list_events(start, end, args.calendar, args.query, args.limit)
-            if data.get("ok"):
-                emit(data, as_json, print_events)
-                return
-        data = call_jxa({
-            "op": "search",
-            "query": args.query,
-            "from": start,
-            "to": end,
-            "calendar": args.calendar,
-            "limit": args.limit,
-            "writableOnly": not args.all,
-        }, LONG_TIMEOUT, as_json)
-        data["source"] = "live"
-        emit(data, as_json, print_events)
-        return
-    if args.cmd == "show":
-        payload = {"op": "show", "uid": args.uid, "query": args.query, "calendar": args.calendar}
-        if args.from_date or args.to_date:
-            start, end = resolve_range(args, 180, search=True)
-            payload["from"] = start
-            payload["to"] = end
-        elif args.query and not args.uid:
-            start, end = resolve_range(args, 180, search=True)
-            payload["from"] = start
-            payload["to"] = end
-        data = call_jxa(payload, LONG_TIMEOUT, as_json)
-        emit(data, as_json, print_show)
-        return
-    if args.cmd == "create":
-        if not (args.title or "").strip():
-            die(2, "missing_title", "create needs --title.", as_json)
-        if not (args.calendar or "").strip():
-            die(2, "missing_calendar", "create needs --calendar.", as_json)
-        if not (args.start or "").strip():
-            die(2, "bad_request", "create needs --start as YYYY-MM-DD or YYYY-MM-DD HH:MM.", as_json)
-        start_dt = parse_stamp(args.start)
-        if start_dt is False:
-            die(2, "bad_request", "start must be YYYY-MM-DD or YYYY-MM-DD HH:MM. Calendar was not called.", as_json)
-        if args.end:
-            end_dt = parse_stamp(args.end)
-            if end_dt is False:
-                die(2, "bad_request", "end must be YYYY-MM-DD or YYYY-MM-DD HH:MM. Calendar was not called.", as_json)
-            if start_dt and end_dt and end_dt < start_dt:
-                die(2, "bad_request", "end is before start. Calendar was not called.", as_json)
-        if args.dry_run:
-            data = {
-                "ok": True,
-                "dryRun": True,
-                "wouldCreate": True,
-                "calendar": args.calendar,
-                "title": args.title,
-                "start": args.start,
-                "end": args.end,
-                "allDay": bool(args.all_day),
-                "location": args.location,
-                "notes": args.notes,
-                "message": "dry-run: Calendar.app was not called.",
-            }
-            emit(data, as_json, lambda d: print(f"dry-run create {d.get('title')!r} on {d.get('calendar')} at {d.get('start')} (Calendar not called)"))
-            return
-        data = call_jxa({
-            "op": "create",
-            "calendar": args.calendar,
-            "title": args.title,
-            "start": args.start,
-            "end": args.end,
-            "allDay": bool(args.all_day),
-            "location": args.location,
-            "notes": args.notes,
-        }, LONG_TIMEOUT, as_json)
-        emit(data, as_json, print_write)
-        return
-    if args.cmd == "update":
-        if args.all_day and args.timed:
-            die(2, "bad_request", "Pass only one of --all-day and --timed.", as_json)
-        if args.start and parse_stamp(args.start) is False:
-            die(2, "bad_request", "start must be YYYY-MM-DD or YYYY-MM-DD HH:MM. Calendar was not called.", as_json)
-        if args.end and parse_stamp(args.end) is False:
-            die(2, "bad_request", "end must be YYYY-MM-DD or YYYY-MM-DD HH:MM. Calendar was not called.", as_json)
-        all_day = True if args.all_day else False if args.timed else None
-        if args.dry_run:
-            data = {
-                "ok": True,
-                "dryRun": True,
-                "wouldUpdate": True,
-                "uid": args.uid,
-                "title": args.title,
-                "start": args.start,
-                "end": args.end,
-                "message": "dry-run: Calendar.app was not called.",
-            }
-            emit(data, as_json, lambda d: print(f"dry-run update {d.get('uid')} (Calendar not called)"))
-            return
-        data = call_jxa({
-            "op": "update",
-            "uid": args.uid,
-            "title": args.title,
-            "start": args.start,
-            "end": args.end,
-            "allDay": all_day,
-            "location": args.location,
-            "notes": args.notes,
-        }, LONG_TIMEOUT, as_json)
-        emit(data, as_json, print_write)
-        return
-    if args.cmd == "delete":
-        if args.dry_run:
-            data = {
-                "ok": True,
-                "dryRun": True,
-                "wouldDelete": True,
-                "uid": args.uid,
-                "message": "dry-run: Calendar.app was not called. A real delete still needs --force.",
-            }
-            emit(data, as_json, lambda d: print(f"dry-run delete {d.get('uid')} (Calendar not called)"))
-            return
-        if not args.force:
-            die(2, "needs_force", "delete refuses without --force. This removes one event by --uid. There is no mass delete and no delete-all.", as_json)
-        data = call_jxa({"op": "delete", "uid": args.uid, "force": True}, LONG_TIMEOUT, as_json)
-        emit(data, as_json, print_write)
-        return
-    die(2, "bad_request", "Unknown command", as_json)
+    try:
+        return emit_success(execute(build_parser().parse_args(argv)), tool="grok-calendar")
+    except ToolError as exc:
+        return emit_error(exc, tool="grok-calendar")
+    except (OSError, ValueError, TypeError, OverflowError) as exc:
+        return emit_error(ToolError("INVALID_INPUT", str(exc)), tool="grok-calendar")
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

@@ -1,6 +1,6 @@
 #!/bin/bash
 # grok-mail — Apple Mail CLI (Mail.app JXA).
-# Drafts only. This build does not send mail.
+# Compatibility launcher for apple-desk mail; sends require explicit authorization, --force and an operation key.
 set -u
 SOURCE="${BASH_SOURCE[0]}"
 while [ -L "$SOURCE" ]; do

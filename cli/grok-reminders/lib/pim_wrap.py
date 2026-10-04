@@ -132,6 +132,10 @@ def doctor(bin_path, as_json):
 
 
 def mapped(cmd, pos, flags):
+    # The external backend has no dry-run contract. Never turn a preview into
+    # complete/delete merely by dropping the caller's flag.
+    if flags.get("dry-run"):
+        return None
     if cmd == "lists" and not flags.get("counts"):
         return ["lists"]
     if cmd == "today":
@@ -185,7 +189,25 @@ def main():
     argv = sys.argv[1:]
     if not argv or argv[0] in {"-h", "--help", "--version", "gaps"}:
         raise SystemExit(FALLBACK)
+    if any(arg.startswith("--dry-run=") for arg in argv):
+        print(json.dumps({"ok": False, "error": "invalid_option", "message": "--dry-run does not take a value. No backend was called."}))
+        raise SystemExit(2)
     cmd, pos, flags = parse(argv)
+    if flags.get("dry-run") and cmd in {"add", "done", "delete"}:
+        field = "title" if cmd == "add" else "id"
+        target = one(flags, field)
+        if not isinstance(target, str) or not target.strip():
+            print(json.dumps({"ok": False, "error": "missing_" + field, "message": "Pass --" + field + ". No backend was called."}))
+            raise SystemExit(2)
+        preview_flags = {key: value for key, value in flags.items() if key != "dry-run"}
+        payload = {"ok": True, "tool": "grok-reminders", "dryRun": True, "action": cmd,
+                   "backendCalled": False, "plannedArguments": mapped(cmd, pos, preview_flags),
+                   "message": "Dry-run only. No Reminders backend was called."}
+        if flags.get("json"):
+            print(json.dumps(payload))
+        else:
+            print(payload["message"])
+        raise SystemExit(0)
     if cmd in {None, "gaps"} or flags.get("counts") or flags.get("live"):
         raise SystemExit(FALLBACK)
     bin_path = binary()

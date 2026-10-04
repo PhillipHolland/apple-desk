@@ -1,358 +1,292 @@
-"""Fill ~/.cache/grok-calendar via grok-calendar, one index at a time.
+"""Bounded EventKit reads into an explicitly dated, private local calendar index.
 
-Default window is the past 30 days through the next 90 days (inclusive).
-Override with grok-desk --past-days / --future-days, or the environment
-variables GROK_CALENDAR_PAST_DAYS and GROK_CALENDAR_FUTURE_DAYS (0..366).
-A calendar that times out is retried once with a longer limit. A window
-that is too wide is split by date. Only the Apple system calendar titled
-"Scheduled Reminders" is skipped by name.
+No permission requests are made here. Native IDs, occurrence references, exact
+start/end values and time zones are retained. Failed attempts never look fresh.
 """
 from __future__ import annotations
 
 import json
 import os
-import sys
-import signal
 import sqlite3
-import subprocess
-from datetime import date, timedelta
+from contextlib import closing
+from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from common import db_path, now_iso, secure_db, secure_dir, which
+import common
 
 CACHE = "grok-calendar"
-SCHEMA = "3"
+SCHEMA = "4"
 SURFACE = "calendar"
-AUTH_DENY = {"automation_denied", "calendar_tcc"}
-SKIP_CALENDARS = frozenset({"Scheduled Reminders"})
 DEFAULT_PAST_DAYS = 30
 DEFAULT_FUTURE_DAYS = 90
 LIST_LIMIT = 800
-FIRST_LIST_TIMEOUT = 50
-RETRY_LIST_TIMEOUT = 110
-NAME_TIMEOUT = 15
-NAME_RETRY_TIMEOUT = 30
-
-
+MAX_PAGES_PER_WINDOW = 100
+MAX_AGE_SECONDS = 86400
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
-CREATE TABLE IF NOT EXISTS calendars (
-  id TEXT PRIMARY KEY,
-  name TEXT,
-  writable INTEGER
+CREATE TABLE calendars (id TEXT PRIMARY KEY, name TEXT NOT NULL, writable INTEGER);
+CREATE TABLE events (
+  uid TEXT NOT NULL, calendar_id TEXT NOT NULL, calendar TEXT NOT NULL,
+  title TEXT, start_at TEXT NOT NULL, end_at TEXT NOT NULL, all_day INTEGER NOT NULL,
+  time_zone TEXT NOT NULL, reference TEXT, occurrence TEXT NOT NULL,
+  start_epoch REAL NOT NULL, end_epoch REAL NOT NULL,
+  PRIMARY KEY(calendar_id, uid, start_at, occurrence)
 );
-CREATE TABLE IF NOT EXISTS events (
-  uid TEXT NOT NULL,
-  calendar TEXT,
-  title TEXT,
-  start_at TEXT NOT NULL,
-  end_at TEXT,
-  all_day INTEGER,
-  PRIMARY KEY (uid, start_at)
-);
+CREATE INDEX events_overlap ON events(start_epoch, end_epoch);
 """
 
 
 def _clamp_days(value, default):
     try:
-        n = int(value)
+        return max(0, min(366, int(value)))
     except (TypeError, ValueError):
         return default
-    if n < 0:
-        return 0
-    if n > 366:
-        return 366
-    return n
 
 
 def window_days(past_days=None, future_days=None):
-    if past_days is None:
-        past_days = os.environ.get("GROK_CALENDAR_PAST_DAYS", DEFAULT_PAST_DAYS)
-    if future_days is None:
-        future_days = os.environ.get("GROK_CALENDAR_FUTURE_DAYS", DEFAULT_FUTURE_DAYS)
-    past = _clamp_days(past_days, DEFAULT_PAST_DAYS)
-    future = _clamp_days(future_days, DEFAULT_FUTURE_DAYS)
-    if future < 1 and past < 1:
-        future = 1
+    past = _clamp_days(os.environ.get("GROK_CALENDAR_PAST_DAYS", DEFAULT_PAST_DAYS) if past_days is None else past_days, DEFAULT_PAST_DAYS)
+    future = _clamp_days(os.environ.get("GROK_CALENDAR_FUTURE_DAYS", DEFAULT_FUTURE_DAYS) if future_days is None else future_days, DEFAULT_FUTURE_DAYS)
     today = date.today()
-    start = today - timedelta(days=past)
-    end = today + timedelta(days=future)
-    return past, future, start, end
+    # The requested final calendar day is included; the stored upper bound is exclusive.
+    return past, future, today - timedelta(days=past), today + timedelta(days=future + 1)
+
+
+def _midnight(day):
+    # astimezone on each local date applies that date's system DST rules.
+    return datetime.combine(day, datetime.min.time()).astimezone()
+
+
+def _instant(value, zone=None):
+    if not isinstance(value, str) or not value:
+        raise ValueError("An event/query timestamp is missing.")
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        if len(value) != 10 or zone is None:
+            raise ValueError("Timed events require an explicit UTC offset; all-day dates require a time zone.")
+        parsed = parsed.replace(tzinfo=ZoneInfo(zone))
+    return parsed.timestamp()
 
 
 def _run(cmd, timeout):
-    proc = subprocess.Popen(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True
-    )
+    result = common.run_cmd(cmd, timeout, stdout_limit=8 * 1024 * 1024)
+    return common.unwrap_result(result)
+
+
+def _meta(con):
     try:
-        stdout, stderr = proc.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            proc.kill()
-        proc.wait(timeout=2)
-        return {"ok": False, "error": "timeout", "code": 4, "message": "exceeded %.0fs" % timeout}
-    raw = (stdout or "").strip()
-    data = {}
-    if raw.startswith("{"):
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError:
-            data = {}
-    if proc.returncode != 0 or not data.get("ok"):
-        err = data.get("error") or ("timeout" if proc.returncode == 4 else "cli_failed")
-        message = data.get("message") or (stderr or "").strip()
-        return {"ok": False, "error": err, "code": data.get("code", proc.returncode), "message": message[:240]}
-    return data
+        return dict(con.execute("SELECT key, value FROM meta"))
+    except sqlite3.Error:
+        return {}
 
 
-def _pending(reason, called):
-    path = db_path(CACHE)
-    secure_dir(path.parent)
+def _set_meta(con, values):
+    for key, value in values.items():
+        con.execute("INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, str(value)))
+
+
+def _record_failure(error, message, called):
+    """Keep any old snapshot, but mark the unsuccessful refresh explicitly."""
+    path = common.db_path(CACHE)
+    common.secure_dir(path.parent)
     con = sqlite3.connect(path)
     try:
-        con.execute("PRAGMA journal_mode=DELETE")
-        con.executescript(SCHEMA_SQL)
-        con.execute("DELETE FROM events")
-        con.execute("DELETE FROM calendars")
-        indexed_at = now_iso()
-        for key, value in {
-            "schema": SCHEMA, "status": "pending_allow", "indexed_at": indexed_at,
-            "rows": "0", "calendars": "0", "note": reason[:240],
-            "window_from": "", "window_to": "", "skipped_calendars": "0",
-            "past_days": "", "future_days": "",
-        }.items():
-            con.execute(
-                "INSERT INTO meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                (key, value),
-            )
+        con.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
+        old = _meta(con)
+        status = "stale" if old.get("indexed_at") else "unavailable"
+        _set_meta(con, {"status": status, "last_attempt_at": common.now_iso(), "last_error": error,
+                        "last_error_message": message[:240]})
         con.commit()
     finally:
         con.close()
-        secure_db(path)
-    return {"ok": True, "surface": SURFACE, "path": str(path), "status": "pending_allow",
-            "rows": 0, "calendars": 0, "indexedAt": indexed_at, "calledApp": called, "message": reason[:240]}
+        common.secure_db(path)
+    return {"ok": False, "surface": SURFACE, "path": str(path), "status": status,
+            "error": error, "message": message[:240], "calledApp": called, "retainedPrevious": bool(old.get("indexed_at"))}
 
 
-def _store(calendars, events, start, end, past, future, truncated, skipped):
-    path = db_path(CACHE)
-    secure_dir(path.parent)
-    con = sqlite3.connect(path)
+def _event(row, calendar):
+    if not isinstance(row, dict):
+        raise ValueError("Calendar returned a non-object event.")
+    ident = row.get("id") or row.get("uid")
+    calendar_id = row.get("calendarId")
+    start, end, zone, all_day = row.get("start"), row.get("end"), row.get("timeZone"), row.get("allDay")
+    if not isinstance(ident, str) or not ident or calendar_id != calendar["id"]:
+        raise ValueError("Calendar returned an event without its actual event/calendar identity.")
+    if not isinstance(zone, str) or not zone or not isinstance(all_day, bool):
+        raise ValueError("Calendar returned an event without its time zone or all-day type.")
+    if all_day and (not isinstance(start, str) or len(start) != 10 or not isinstance(end, str) or len(end) != 10):
+        raise ValueError("All-day events require date-only start and exclusive end.")
+    start_epoch, end_epoch = _instant(start, zone if all_day else None), _instant(end, zone if all_day else None)
+    if end_epoch < start_epoch or (all_day and end_epoch == start_epoch):
+        raise ValueError("Calendar returned an invalid event end.")
+    return (ident, calendar_id, calendar["name"], str(row.get("title") or ""), start, end, int(all_day), zone,
+            row.get("reference") or row.get("ref"), str(row.get("occurrence") or ""), start_epoch, end_epoch)
+
+
+def _store(calendars, events, start, end, past, future, failures):
+    path = common.db_path(CACHE)
+    common.secure_dir(path.parent)
+    con = sqlite3.connect(path, timeout=10)
     try:
-        con.execute("PRAGMA journal_mode=DELETE")
-        con.executescript(SCHEMA_SQL)
-        con.execute("DELETE FROM events")
-        con.execute("DELETE FROM calendars")
-        cal_rows = 0
-        for row in calendars:
-            name = (row.get("name") or "").strip()
-            if not name:
-                continue
-            ident = str(row.get("id") or name)
-            con.execute(
-                "INSERT OR REPLACE INTO calendars(id, name, writable) VALUES(?, ?, ?)",
-                (ident, name, None),
-            )
-            cal_rows += 1
-        seen = set()
-        event_rows = 0
-        for row in events:
-            title = row.get("title") or ""
-            start_at = row.get("start") or ""
-            if not start_at:
-                continue
-            uid = row.get("uid") or "%s|%s|%s" % (row.get("calendar"), start_at, title)
-            key = (uid, start_at)
-            if key in seen:
-                continue
-            seen.add(key)
-            con.execute(
-                "INSERT OR REPLACE INTO events(uid, calendar, title, start_at, end_at, all_day) VALUES(?,?,?,?,?,?)",
-                (uid, row.get("calendar") or "", title, start_at, row.get("end") or "", 1 if row.get("allDay") else 0),
-            )
-            event_rows += 1
-        indexed_at = now_iso()
-        note = (
-            "window past %dd + next %dd; a wide window that times out is read in "
-            "14-day slices and each slice is retried once; skip Scheduled Reminders only"
-            % (past, future)
-        )
-        for key, value in {
-            "schema": SCHEMA, "status": "ok", "indexed_at": indexed_at,
-            "rows": str(event_rows), "calendars": str(cal_rows),
-            "window_from": start.isoformat(), "window_to": end.isoformat(),
-            "past_days": str(past), "future_days": str(future),
-            "truncated": "1" if truncated else "0",
-            "skipped_calendars": str(len(skipped)),
-            "note": note,
-        }.items():
-            con.execute(
-                "INSERT INTO meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                (key, value),
-            )
+        con.executescript("BEGIN IMMEDIATE; DROP TABLE IF EXISTS events; DROP TABLE IF EXISTS calendars;\n" + SCHEMA_SQL)
+        for cal in calendars:
+            con.execute("INSERT INTO calendars(id,name,writable) VALUES(?,?,?)", (cal["id"], cal["name"], int(cal["writable"])))
+        con.executemany("INSERT OR REPLACE INTO events VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", events)
+        rows = con.execute("SELECT count(*) FROM events").fetchone()[0]
+        indexed_at = common.now_iso()
+        status = "partial" if failures else "ok"
+        con.execute("DELETE FROM meta")
+        _set_meta(con, {"schema": SCHEMA, "status": status, "indexed_at": indexed_at, "last_attempt_at": indexed_at,
+                       "rows": rows, "calendars": len(calendars), "window_from": start.isoformat(), "window_to": end.isoformat(),
+                       "window_start_epoch": start.timestamp(), "window_end_epoch": end.timestamp(),
+                       "past_days": past, "future_days": future, "partial": int(bool(failures)),
+                       "failures": json.dumps(failures), "source": "eventkit", "max_age_seconds": MAX_AGE_SECONDS})
         con.commit()
+    except Exception:
+        con.rollback()
+        raise
     finally:
         con.close()
-        secure_db(path)
-    return {
-        "ok": True, "surface": SURFACE, "rows": event_rows, "calendars": cal_rows,
-        "from": start.isoformat(), "to": end.isoformat(),
-        "pastDays": past, "futureDays": future,
-        "skipped": skipped, "indexedAt": indexed_at, "calledApp": True,
-    }
-
-
-def _list_once(bin_path, index, start, end, timeout):
-    return _run(
-        [bin_path, "list", "--live", "--light", "--index", str(index),
-         "--from", start.isoformat(), "--to", end.isoformat(),
-         "--limit", str(LIST_LIMIT), "--json"],
-        timeout,
-    )
-
-
-def _date_slices(start, end, chunk_days):
-    cur = start
-    while cur <= end:
-        nxt = min(cur + timedelta(days=chunk_days - 1), end)
-        yield cur, nxt
-        cur = nxt + timedelta(days=1)
-
-
-def _merge(left_status, left_events, left_meta, right_status, right_events, right_meta, start, end, err):
-    if left_status == "auth":
-        return left_status, [], left_meta
-    if right_status == "auth":
-        return right_status, [], right_meta
-    events = (left_events or []) + (right_events or [])
-    if left_status == "ok" or right_status == "ok":
-        return "ok", events, {
-            "truncated": bool((left_meta or {}).get("truncated") or (right_meta or {}).get("truncated")),
-            "split": True,
-            "partial": left_status != "ok" or right_status != "ok",
-        }
-    return "skip", [], {"error": err, "from": start.isoformat(), "to": end.isoformat()}
-
-
-def _slice_once(bin_path, index, start, end):
-    """One slice. A short timeout is retried once longer. No further split."""
-    chunk = _list_once(bin_path, index, start, end, 40)
-    if chunk.get("error") in AUTH_DENY:
-        return "auth", [], chunk
-    if chunk.get("ok"):
-        return "ok", chunk.get("events") or [], {"truncated": bool(chunk.get("truncated"))}
-    err = chunk.get("error") or "list_failed"
-    if err == "query_too_broad" and (end - start).days >= 1:
-        mid = start + timedelta(days=max(1, ((end - start).days + 1) // 2))
-        left_end = mid - timedelta(days=1)
-        if left_end >= start:
-            return _merge(
-                *_slice_once(bin_path, index, start, left_end),
-                *_slice_once(bin_path, index, mid, end),
-                start, end, err,
-            )
-    if err in {"timeout", "automation_timeout", "calendar_error"}:
-        chunk = _list_once(bin_path, index, start, end, 80)
-        if chunk.get("error") in AUTH_DENY:
-            return "auth", [], chunk
-        if chunk.get("ok"):
-            return "ok", chunk.get("events") or [], {"truncated": bool(chunk.get("truncated")), "retried": True}
-        err = chunk.get("error") or err
-    return "skip", [], {"error": err, "from": start.isoformat(), "to": end.isoformat(), "message": (chunk.get("message") or "")[:160]}
-
-
-def _events_for_calendar(bin_path, index, start, end):
-    # Light calendars answer a full window quickly. A wide window that times out
-    # or is too broad is read in 14-day slices instead of one long retry.
-    chunk = _list_once(bin_path, index, start, end, 35)
-    if chunk.get("error") in AUTH_DENY:
-        return "auth", [], chunk
-    if chunk.get("ok"):
-        return "ok", chunk.get("events") or [], {"truncated": bool(chunk.get("truncated"))}
-    err = chunk.get("error") or "list_failed"
-    wide = (end - start).days > 14
-    if wide and err in {"timeout", "automation_timeout", "calendar_error", "query_too_broad"}:
-        events = []
-        any_ok = False
-        partial = False
-        truncated = False
-        for a, b in _date_slices(start, end, 14):
-            status, got, meta = _slice_once(bin_path, index, a, b)
-            if status == "auth":
-                return status, [], meta
-            if status == "ok":
-                any_ok = True
-                events.extend(got or [])
-                truncated = truncated or bool((meta or {}).get("truncated"))
-            else:
-                partial = True
-        if any_ok:
-            return "ok", events, {"truncated": truncated, "split": True, "partial": partial, "retried": True}
-        return "skip", [], {"error": err, "from": start.isoformat(), "to": end.isoformat(), "retried": True}
-    if err in {"timeout", "automation_timeout", "calendar_error"}:
-        chunk = _list_once(bin_path, index, start, end, RETRY_LIST_TIMEOUT)
-        if chunk.get("error") in AUTH_DENY:
-            return "auth", [], chunk
-        if chunk.get("ok"):
-            return "ok", chunk.get("events") or [], {"truncated": bool(chunk.get("truncated")), "retried": True}
-        err = chunk.get("error") or err
-    return "skip", [], {"error": err, "from": start.isoformat(), "to": end.isoformat(), "message": (chunk.get("message") or "")[:160], "retried": True}
+        common.secure_db(path)
+    return {"ok": not failures, "surface": SURFACE, "path": str(path), "status": status,
+            "rows": rows, "calendars": len(calendars), "from": start.isoformat(), "to": end.isoformat(),
+            "endExclusive": True, "pastDays": past, "futureDays": future, "partial": bool(failures),
+            "failures": failures, "indexedAt": indexed_at, "calledApp": True,
+            "error": "index_partial" if failures else None}
 
 
 def build(past_days=None, future_days=None):
-    bin_path = which("grok-calendar")
-    if not bin_path:
-        return {"ok": False, "error": "missing_cli", "rows": 0, "message": "grok-calendar is not on PATH."}
-    past, future, start, end = window_days(past_days, future_days)
-    doctor = _run([bin_path, "doctor", "--json"], 30)
+    binary = common.which("grok-calendar")
+    if not binary:
+        return _record_failure("missing_cli", "grok-calendar is not installed.", False)
+    doctor = _run([binary, "doctor", "--json"], 8)
+    auth = doctor.get("data") or {}
     if not doctor.get("ok"):
-        if doctor.get("error") in AUTH_DENY or doctor.get("code") in (3, 4) or doctor.get("error") in {"timeout", "automation_timeout"}:
-            return _pending(doctor.get("message") or doctor.get("error") or "unauthorized", True)
-        return {"ok": False, "error": doctor.get("error") or "doctor_failed", "rows": 0,
-                "message": (doctor.get("message") or "doctor failed")[:240]}
-    try:
-        count = int(doctor.get("calendars") or 0)
-    except (TypeError, ValueError):
-        count = 0
+        return _record_failure(doctor.get("error") or "doctor_failed", doctor.get("message") or "Calendar diagnostics are unavailable.", True)
+    if auth.get("authorization") != "fullAccess" or auth.get("fullAccess") is not True:
+        status = auth.get("authorization") or "unknown"
+        return _record_failure("permission_required" if status in {"denied", "restricted", "notDetermined", "writeOnly"} else "authorization_unknown",
+                               "Calendar full access is not confirmed (" + str(status) + "). Use explicit Calendar permission setup.", True)
+    listed = _run([binary, "calendars", "--json"], 20)
+    raw_calendars = (listed.get("data") or {}).get("calendars")
+    if not listed.get("ok") or not isinstance(raw_calendars, list):
+        return _record_failure(listed.get("error") or "invalid_response", listed.get("message") or "Calendar discovery returned no valid calendar list.", True)
     calendars = []
-    events = []
-    skipped = []
-    truncated = False
-    for i in range(count):
-        named = _run([bin_path, "name-at", "--index", str(i), "--json"], NAME_TIMEOUT)
-        if not named.get("ok") and named.get("error") in {"timeout", "automation_timeout"}:
-            named = _run([bin_path, "name-at", "--index", str(i), "--json"], NAME_RETRY_TIMEOUT)
-        if not named.get("ok"):
-            if named.get("error") in AUTH_DENY:
-                return _pending(named.get("message") or "unauthorized", True)
-            skipped.append({"index": i, "error": named.get("error") or "name_failed"})
-            continue
-        name = (named.get("name") or "").strip()
-        if name in SKIP_CALENDARS:
-            skipped.append({"index": i, "name": name, "error": "skipped_name"})
-            continue
-        calendars.append({"id": "index:%d" % i, "name": name, "index": i})
-        if os.environ.get("GROK_CALENDAR_PROGRESS"):
-            print("calendar %d/%d %s" % (i + 1, count, name), file=sys.stderr, flush=True)
-        status, chunk_events, meta = _events_for_calendar(bin_path, i, start, end)
-        if os.environ.get("GROK_CALENDAR_PROGRESS"):
-            print("  %s events=%d" % (status, len(chunk_events) if status == "ok" else 0), file=sys.stderr, flush=True)
-        if status == "auth":
-            return _pending((meta or {}).get("message") or "unauthorized", True)
-        if status != "ok":
-            row = {"index": i, "name": name, "error": (meta or {}).get("error") or "list_failed"}
-            if (meta or {}).get("retried"):
-                row["retried"] = True
-            skipped.append(row)
-            continue
-        events.extend(chunk_events)
-        if (meta or {}).get("truncated"):
-            truncated = True
-    if not events:
-        return {
-            "ok": False, "error": "no_events", "rows": 0, "skipped": skipped,
-            "from": start.isoformat(), "to": end.isoformat(),
-            "pastDays": past, "futureDays": future,
-            "message": "no events in the past %dd + next %dd window after skips" % (past, future),
-        }
-    return _store(calendars, events, start, end, past, future, truncated, skipped)
+    for row in raw_calendars:
+        if not isinstance(row, dict) or not isinstance(row.get("id"), str) or not row["id"]:
+            return _record_failure("invalid_response", "Calendar discovery omitted a real calendar ID.", True)
+        calendars.append({"id": row["id"], "name": str(row.get("title") or row.get("name") or ""), "writable": row.get("writable") is True})
+    if len({cal["id"] for cal in calendars}) != len(calendars):
+        return _record_failure("invalid_response", "Calendar discovery returned duplicate calendar IDs.", True)
+    past, future, first_day, last_day = window_days(past_days, future_days)
+    start, end = _midnight(first_day), _midnight(last_day)
+    events, failures = [], []
+    for calendar in calendars:
+        day = first_day
+        while day < last_day:
+            next_day = min(day + timedelta(days=31), last_day)
+            lower, upper = _midnight(day), _midnight(next_day)
+            offset = 0
+            expected_total, seen = None, set()
+            for _ in range(MAX_PAGES_PER_WINDOW):
+                chunk = _run([binary, "list", "--live", "--light", "--calendar-id", calendar["id"],
+                              "--from", lower.isoformat(), "--to", upper.isoformat(), "--limit", str(LIST_LIMIT),
+                              "--offset", str(offset), "--json"], 45)
+                data = chunk.get("data") or {}
+                raw_events = data.get("events")
+                failure = None
+                if not chunk.get("ok") or not isinstance(raw_events, list):
+                    failure = chunk.get("error") or "invalid_response"
+                else:
+                    try:
+                        for row in raw_events:
+                            event = _event(row, calendar)
+                            lo, hi = event[-2:]
+                            if not ((lo < upper.timestamp() and hi > lower.timestamp()) or
+                                    (lo == hi and lower.timestamp() <= lo < upper.timestamp())):
+                                raise ValueError("An event does not overlap its requested window.")
+                            identity = (event[0], event[1], event[4], event[9])
+                            if identity in seen:
+                                raise ValueError("Calendar pagination repeated an event occurrence.")
+                            seen.add(identity)
+                            events.append(event)
+                    except (ValueError, TypeError, ZoneInfoNotFoundError):
+                        failure = "invalid_event"
+                    total = data.get("total")
+                    if (not isinstance(data.get("truncated"), bool) or not isinstance(total, int) or isinstance(total, bool)
+                            or total < offset + len(raw_events) or data.get("offset") != offset
+                            or data.get("truncated") != (offset + len(raw_events) < total)):
+                        failure = failure or "invalid_pagination"
+                    elif expected_total is not None and total != expected_total:
+                        failure = failure or "calendar_changed_during_index"
+                    else:
+                        expected_total = total
+                    if data.get("partial") is True:
+                        failure = failure or "partial_response"
+                if failure:
+                    failures.append({"calendarId": calendar["id"], "from": lower.isoformat(), "to": upper.isoformat(), "offset": offset, "error": failure})
+                    break
+                truncated = data.get("truncated") is True
+                if not truncated:
+                    break
+                if not raw_events or len(raw_events) > LIST_LIMIT or data.get("offset", offset) != offset:
+                    failures.append({"calendarId": calendar["id"], "error": "invalid_pagination", "offset": offset})
+                    break
+                offset += len(raw_events)
+            else:
+                failures.append({"calendarId": calendar["id"], "error": "page_limit", "offset": offset})
+            day = next_day
+    return _store(calendars, events, start, end, past, future, failures)
+
+
+def cache_status():
+    path = common.db_path(CACHE)
+    if not path.exists():
+        return {"status": "missing", "stale": True, "complete": False, "path": str(path)}
+    try:
+        with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as con:
+            meta = _meta(con)
+        indexed_at = meta.get("indexed_at")
+        age = datetime.now(timezone.utc).timestamp() - _instant(indexed_at) if indexed_at else None
+        stale = age is None or age < -300 or age > MAX_AGE_SECONDS or meta.get("status") == "stale"
+        compatible = meta.get("schema") == SCHEMA
+        complete = compatible and meta.get("status") == "ok" and meta.get("partial") == "0"
+        status = "unavailable" if not indexed_at else ("schema_mismatch" if not compatible else ("stale" if stale else meta.get("status", "unavailable")))
+        return {"status": status, "stale": stale, "complete": complete, "path": str(path), "meta": meta,
+                "indexedAt": indexed_at, "ageSeconds": age, "maxAgeSeconds": MAX_AGE_SECONDS,
+                "windowFrom": meta.get("window_from"), "windowTo": meta.get("window_to")}
+    except (sqlite3.Error, ValueError, TypeError):
+        return {"status": "unreadable", "stale": True, "complete": False, "path": str(path)}
+
+
+def cached_search(query, limit, start=None, end=None, calendar_id=None):
+    if not isinstance(limit, int) or not 1 <= limit <= 1000:
+        return {"ok": False, "error": "invalid_limit", "message": "--limit must be 1..1000."}
+    info = cache_status()
+    if info["status"] in {"missing", "unreadable", "schema_mismatch", "unavailable"}:
+        return {"ok": False, "error": info["status"], "message": "Calendar cache is unavailable; run an explicit calendar reindex.", "cache": info}
+    clauses, args = ["title LIKE ? ESCAPE '\\' COLLATE NOCASE"], ["%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"]
+    try:
+        if (start is None) != (end is None):
+            raise ValueError("Pass both --from and --to.")
+        if start is not None:
+            lower, upper = _instant(start), _instant(end)
+            if lower >= upper:
+                raise ValueError("--from must precede the exclusive --to.")
+            if lower < float(info["meta"]["window_start_epoch"]) or upper > float(info["meta"]["window_end_epoch"]):
+                return {"ok": False, "error": "cache_window_miss", "message": "The requested window extends beyond the cached window.", "cache": info}
+            clauses.append("((start_epoch < ? AND end_epoch > ?) OR (start_epoch=end_epoch AND start_epoch>=? AND start_epoch<?))")
+            args.extend([upper, lower, lower, upper])
+        if calendar_id:
+            clauses.append("calendar_id=?")
+            args.append(calendar_id)
+        with closing(sqlite3.connect(f"file:{info['path']}?mode=ro", uri=True)) as con:
+            rows = list(con.execute("SELECT uid,calendar_id,calendar,title,start_at,end_at,all_day,time_zone,reference,occurrence FROM events WHERE " + " AND ".join(clauses) + " ORDER BY start_epoch,calendar_id,uid LIMIT ?", args + [limit + 1]))
+        hits = [{"id": r[0], "uid": r[0], "calendarId": r[1], "calendar": r[2], "title": r[3], "start": r[4], "end": r[5], "allDay": bool(r[6]), "timeZone": r[7], "reference": r[8], "occurrence": r[9] or None} for r in rows[:limit]]
+    except (sqlite3.Error, ValueError, TypeError, KeyError) as exc:
+        return {"ok": False, "error": "invalid_cache_query", "message": str(exc)[:200]}
+    ok = info["complete"] and not info["stale"]
+    return {"ok": ok, "error": None if ok else ("cache_stale" if info["stale"] else "cache_partial"),
+            "surface": SURFACE, "source": "cache", "query": query, "hits": hits, "count": len(hits),
+            "truncated": len(rows) > limit, "partial": not info["complete"] or len(rows) > limit,
+            "stale": info["stale"], "cacheComplete": info["complete"], "path": info["path"],
+            "indexedAt": info["indexedAt"], "windowFrom": info["windowFrom"], "windowTo": info["windowTo"], "endExclusive": True}

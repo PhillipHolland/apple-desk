@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>local.apple-desk.calendar</string>
+<key>CFBundleName</key><string>Apple Desk Calendar</string>
+<key>CFBundleVersion</key><string>1</string>
+<key>NSCalendarsFullAccessUsageDescription</key><string>Apple Desk reads and manages calendar events when you explicitly invoke its local calendar commands.</string>
+<key>NSCalendarsUsageDescription</key><string>Apple Desk reads and manages calendar events on this Mac.</string>
+<key>NSAppleEventsUsageDescription</key><string>Apple Desk controls Apple Mail for the mail commands you explicitly invoke.</string>
+</dict></plist>

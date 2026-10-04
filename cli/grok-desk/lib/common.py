@@ -2,19 +2,21 @@
 from __future__ import annotations
 
 import os
+import json
+import signal
 import shutil
 import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-VERSION = "0.1.7"
+VERSION = "0.2.0"
 TOOL = "grok-desk"
 APPLE = datetime(2001, 1, 1, tzinfo=timezone.utc)
 
-# Mail stays version-only: Mail.app doctor can hang. Cloud mail stays on the user's mail connector.
-# Calendar and Reminders are not probed by the 5s onboard doctor loop.
-# reindex calls each once with the CLI's own timeout. Timeout or deny -> pending_allow, no retry.
-VERSION_ONLY = ("grok-calendar", "grok-reminders", "grok-mail")
+# Legacy doctors can send Apple Events and therefore show permission prompts.
+# Passive desk status checks only the new no-prompt Mail/EventKit doctors.
+VERSION_ONLY = ("grok-reminders", "grok-notes", "grok-contacts", "grok-messages",
+                "grok-shortcuts", "grok-icloud", "grok-spotlight", "grok-focus", "grok-safari")
 
 TOOLS = (
     "grok-reminders",
@@ -137,29 +139,69 @@ def link_if_needed(name: str) -> dict:
 
 
 def run_cmd(cmd: list[str], timeout: float, stdout_limit: int = 500) -> dict:
+    """Bound a process group so a timed-out facade cannot leave its helper running."""
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        return {"ok": False, "error": "timeout", "timeout": timeout}
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
     except OSError as exc:
         return {"ok": False, "error": "spawn_failed", "message": str(exc)}
-    stdout = (proc.stdout or "").strip()
-    stderr = (proc.stderr or "").strip()
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        try:
+            proc.communicate(timeout=1)
+        except subprocess.TimeoutExpired:
+            pass
+        return {"ok": False, "error": "timeout", "timeout": timeout}
+    stdout, stderr = (stdout or "").strip(), (stderr or "").strip()
     limit = max(500, int(stdout_limit))
-    return {
-        "ok": proc.returncode == 0,
-        "code": proc.returncode,
-        "stdout": stdout[:limit],
-        "stderr": stderr[:300],
-    }
+    return {"ok": proc.returncode == 0, "code": proc.returncode,
+            "stdout": stdout[:limit], "stdoutTruncated": len(stdout) > limit, "stderr": stderr[:300]}
+
+
+def unwrap_result(result: dict) -> dict:
+    """Read a tool envelope; successful process exit alone never implies success."""
+    if result.get("error"):
+        return {"ok": False, "error": result["error"], "message": result.get("message") or result["error"], "data": {}}
+    try:
+        payload = json.loads(result.get("stdout") or "")
+        if not isinstance(payload, dict) or result.get("stdoutTruncated"):
+            raise ValueError("invalid envelope")
+    except (ValueError, TypeError):
+        return {"ok": False, "error": "invalid_response", "message": "The tool did not return a complete JSON object.", "data": {}}
+    normalized = "schemaVersion" in payload
+    data = payload.get("data") if normalized else payload
+    error = payload.get("error")
+    if isinstance(error, dict):
+        code, message = error.get("code"), error.get("message")
+    else:
+        code, message = error, payload.get("message")
+    success = result.get("ok") is True and payload.get("ok") is True
+    return {"ok": success, "data": data if isinstance(data, dict) else {},
+            "error": None if success else (code or "cli_failed"),
+            "message": message or (result.get("stderr") or ""), "exitCode": result.get("code"),
+            "normalized": normalized}
 
 
 def version_of(path: str) -> str | None:
-    result = run_cmd([path, "--version"], 5)
-    text = (result.get("stdout") or result.get("stderr") or "").strip()
-    if not text:
+    result = run_cmd([path, "--version"], 5, stdout_limit=16000)
+    raw = (result.get("stdout") or result.get("stderr") or "").strip()
+    if not raw:
         return None
-    return text.splitlines()[0][:120]
+    if raw.startswith("{"):
+        decoded = unwrap_result(result)
+        data = decoded.get("data") or {}
+        version = data.get("version")
+        if version is not None:
+            return str(version)[:120]
+        try:
+            return str((json.loads(raw).get("meta") or {}).get("version") or "unknown")[:120]
+        except (ValueError, TypeError):
+            return None
+    return raw.splitlines()[0][:120]
 
 
 SIGNATURE_MAX = 160

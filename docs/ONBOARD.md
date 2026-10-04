@@ -1,66 +1,43 @@
-# Onboard (guided Mac permissions)
+# Permission setup and diagnostics
 
-Use this when a bot (or a human) is wiring Apple Desk on a Mac for the first time. One permission gate at a time. Why, then a doctor check. Honor the exit-code card below. Do not loop doctors while AFK.
+Start from the terminal or agent process that will actually run Apple Desk on this Mac:
 
-## Command
-
-```bash
-grok-desk onboard --guided
-# JSON for agents:
-grok-desk onboard --guided --json
-# Opt in to contacts phone/email cache during the final reindex:
-grok-desk onboard --guided --index-contacts
+```sh
+apple-desk doctor
+apple-desk permissions request --mail
+apple-desk permissions request --calendar
+apple-desk doctor
 ```
 
-Plain `grok-desk onboard` still links missing bins, runs the short safe doctor rollup, and reindexes. `--guided` is the bot-friendly walk that **stops at the first failing gate** and prints the exact System Settings path.
+Each request is explicit and can open a macOS permission dialog. A normal doctor call does not request access. Its successful execution means the diagnostic completed; inspect the nested authorization report to see whether the service is available.
 
-Re-run the same command after the user clicks Allow. Passing gates are skipped. There is no AFK retry loop inside the command.
+## Calendar
 
-## First win (after the minimum gate only)
+Calendar uses a bundled native EventKit helper and requires **Full Access** to read, list, or verify changes. Write Only does not permit listing events. The helper explicitly requests full access using the macOS 14 API and includes the matching usage description.
 
-- `grok-messages unread` (Full Disk Access + Messages automation)
-- `grok-notes search` (Notes automation)
-- `grok-reminders today` (Reminders automation)
+If access is denied, look under **System Settings → Privacy & Security → Calendars** for the process identified by macOS. It may be associated with the launching terminal or host process rather than the CLI command name. Do not assume there must be an entry named `macdesk` or a separate “Full Access” toggle. The explicit request is what asks macOS for the correct level. Recheck the tool's actual status afterward.
 
-## Gate order
+If no request can appear or the state remains write-only, keep the returned status/error and identify the actual calling host. Do not repeatedly reset permissions or toggle unrelated apps. A moved or rebuilt development helper can need a fresh grant. Calendar.app does not need to be automated for EventKit reads.
 
-| # | Gate | Why | Check | On failure, open |
-| --- | --- | --- | --- | --- |
-| 1 | Full Disk Access (Messages history) | Read `chat.db` for history, unread, search. Send does **not** need FDA. | `grok-messages doctor` → history available | System Settings → Privacy & Security → Full Disk Access → enable **Grok Bot** and **Grok Bot Helper**, then quit and reopen Grok Bot |
-| 2 | Automation → Messages | Send and scripting list | `grok-messages doctor` → automation authorized | System Settings → Privacy & Security → Automation → Grok Bot (and Grok Bot Helper) → **Messages** |
-| 3 | Automation → Notes | Notes.app control | `grok-notes doctor` | … → Automation → **Notes** |
-| 4 | Automation → Contacts | Live Contacts.app (cache-only doctor is not enough) | `grok-contacts doctor --live` | … → Automation → **Contacts** |
-| 5 | Automation → Calendar | Calendar.app lean doctor | `grok-calendar doctor` | … → Automation → **Calendar**. Calendar may also need Privacy & Security → **Calendars** |
-| 6 | Automation → Reminders | Reminders.app lean doctor | `grok-reminders doctor` | … → Automation → **Reminders**. Reminders may also need Privacy & Security → **Reminders** |
-| 7 | Shortcuts | List shortcuts | `grok-shortcuts doctor` | Usually no extra TCC; if the CLI is missing, finish Install first |
-| 8 | Mail (optional) | Mail.app on this Mac; prefer a cloud mail connector | version / one doctor attempt | … → Automation → **Mail**. Do not loop on exit 4 |
-| 9 | iCloud Drive (optional) | CloudDocs list/read | `grok-icloud doctor` | Usually no dialog; missing folder is not FDA |
-| 10 | Signature | Outgoing footer the **user** chooses | `grok-desk signature` | Ask once. Then `grok-desk signature --set "…"`. Never bake a default. `--clear` to unset |
-| 11 | Reindex | Local caches under `~/.cache/grok-*` | `grok-desk reindex` | Fix any earlier `pending_allow` gate, then re-run guided |
+## Mail
 
-Calendar and Reminders may also need Privacy & Security → Calendars or Reminders.
+Mail uses Mail.app Automation. Status checks neither launch Mail nor read messages. The explicit request may launch Mail and ask to automate it. If Mail is not running, ordinary commands report that state; the explicit `--launch` option allows launch when needed. Permission to Calendar does not authorize Mail, and Mail permission does not authorize sending.
 
-## Exit codes the bot must honor
+A timeout is not proof of denied permission. Slow Mail calls return a timeout; searches retain the latest completed checkpoint. Resume a non-null next cursor with unchanged scope and filters. If mailbox edits invalidate its anchors, restart discovery as instructed by the stale-cursor error.
 
-| Code / signal | Meaning | Bot action |
-| --- | --- | --- |
-| 0 | Gate or full guided pass | Continue or finish |
-| 2 | Bad args / signature unset (guided stopped to ask) | Ask the user; do not invent a line |
-| 3, -1743 | Not authorized to send Apple events | Stop and open the Settings path. No loop. |
-| 4 | Automation dialog still up | Stop for one Allow click. |
-| 5 | Needs Full Disk Access (Messages history) | Full Disk Access. |
-| -1712 | Messages hang on send | Quit and relaunch Messages once, then one send, then stop. |
-| screen_locked | Screen is locked before UI | Unlock, then one retry. Never loop. |
+## Other app tools and indexes
 
-## Messages send rules (preserve; generic)
+`apple-desk desk onboard --guided` is a passive inventory. It does not automatically prompt every app or build personal-data indexes. Some legacy app commands need their own Automation permission. Messages history requires Full Disk Access for the actual terminal/host. Only enable access for tools you intend to use.
 
-- 1:1 send is Messages **participant** only. No `activate`, no menus.
-- Draft recipient + exact text; wait for explicit yes; then `grok-messages send --force`. The CLI does **not** append the signature; the bot reads `grok-desk signature` and appends the line the user set.
-- Send failures use the exit-code card: **4** stops for one Allow click; **-1712** quits and relaunches Messages once, then one send, then stop.
-- Do not write `chat.db`. Read-only confirm of one outgoing row is ok after an approved send.
-- Group send only with `--chat-guid` after the user named that group.
-- `mark-read` is the only UI path; it exits `screen_locked` before activate when the screen is locked.
+Index collection is a separate, explicit action:
 
-## Packaging note
+```sh
+apple-desk desk reindex --only calendar
+apple-desk desk status
+```
 
-Calendar and Reminders stay on the existing app CLIs (`grok-calendar`, `grok-reminders`). Do not block onboard on a new EventKit backend. Prefer wrapping public apple-pim / imsg patterns later; ship install + guided onboard first.
+Calendar indexes include their collection window and freshness. Incomplete, stale, or out-of-window data must not be treated as an exhaustive answer. Live Calendar commands always use EventKit.
+
+An optional message signature can be set with `apple-desk desk signature --set "your chosen text"`; it is not automatically appended by send commands. Never infer permission to send from the presence of a signature.
+
+The retained Messages reaction wrapper has separate UI limits: `imsg react` may need Messages in front and targets the last or selected message, not a stable GUID. Locked-screen tapbacks remain unsupported. Apple Desk does not disable SIP or inject IMCore to bypass that limitation. Legacy app exit codes differ from the new Mail/Calendar schema; inspect each command's error rather than applying a universal permission rule to a number.

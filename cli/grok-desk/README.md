@@ -1,52 +1,92 @@
 # grok-desk
 
-Local onboarding for Apple Desk. Version 0.1.7.
-
-Builds search caches on this Mac so later lookups do not walk Notes or `chat.db` from scratch. Nothing is uploaded. No Keychain. No Passwords.
+Local setup checks and explicit search indexing for Apple Desk 0.2.0. Available as
+`apple-desk desk` or the retained `grok-desk` command. Data stays on this Mac.
 
 ```bash
-grok-desk doctor --json
-grok-desk onboard --json
-grok-desk onboard --guided --json   # one permission gate at a time; stops with Settings path
-grok-desk onboard --guided --skip-signature --json  # continue when user chose no signature
-grok-desk reindex --json
-grok-desk reindex --full --only messages --json
-grok-desk reindex --only calendar --json
-grok-desk reindex --only calendar --past-days 30 --future-days 90 --json
-grok-desk reindex --only reminders --json
-grok-desk reindex --only contacts --json   # opt-in; writes phones and emails locally
-grok-desk onboard --index-contacts --json  # same opt-in
-grok-desk status --json
-grok-desk search calendar "standup" --json
-grok-desk gaps
+apple-desk desk doctor --json
+apple-desk desk onboard --guided --json
+apple-desk desk status --json
+apple-desk permissions request --mail
+apple-desk permissions request --calendar
+apple-desk desk reindex --only calendar --past-days 30 --future-days 90 --json
+apple-desk desk search calendar "standup" --json
+apple-desk desk reindex --only contacts --json
+apple-desk desk reindex --full --only messages --json
+apple-desk desk gaps --json
 ```
 
-## Caches
+`onboard`, including `--guided`, is passive: it reports installed versions, local
+cache state, and bounded Mail/Calendar authorization diagnostics. It does not ask
+macOS for permissions, create links, or build indexes. Other app tools receive
+version checks only. A successful doctor process does not mean access is granted:
+Mail must report `allowed: true`, and Calendar must report `fullAccess: true` with
+authorization `fullAccess`. The output provides explicit permission commands when
+needed. Legacy onboarding flags `--full`, `--index-contacts`, and
+`--skip-signature` remain accepted but do not start indexing or require a signature.
 
-| Surface | Path | When |
+Run `reindex` deliberately to build caches. Legacy Notes, Messages, Contacts, and
+Reminders indexers retain their original access requirements and limitations;
+their explicit indexing commands may require macOS access. Mail is not indexed.
+
+## Calendar cache
+
+`reindex --only calendar` uses the owned EventKit backend after a passive full
+access check. It stores schema 4 at `~/.cache/grok-calendar/index.sqlite`, with
+real calendar IDs, event IDs, occurrence references, exact start and end values,
+all-day types, and time zones. Duplicate calendar names stay distinct. Notes,
+locations, URLs, attendees, and alarms are omitted from this search index.
+
+The default window includes 30 days before today through 90 days after today.
+Override with `--past-days` and `--future-days`, or
+`GROK_CALENDAR_PAST_DAYS` and `GROK_CALENDAR_FUTURE_DAYS`; each is clamped to
+0..366. Reads use explicit timestamps in windows of at most 31 days, at most 800
+events per page, and at most 100 pages per calendar/window. Each backend call has
+a deadline. Timeouts are recorded without automatic retries.
+
+An incomplete or invalid page makes the index explicitly partial. Permission or
+backend failure before collection preserves an existing snapshot, marks it stale,
+and leaves its successful indexing timestamp unchanged. Snapshots also become
+stale after 24 hours. Old schemas require an explicit reindex. Empty, authorized,
+fully read windows are valid complete snapshots.
+
+Calendar cache searches report their coverage, freshness, and completeness. They
+return a failure status for stale or partial caches while retaining available
+matches. Optional bounds must both be ISO timestamps with UTC offsets, fall
+entirely inside the cached window, and use an exclusive upper bound. Matching
+uses actual overlapping instants, including all-day time zones and DST.
+
+```bash
+apple-desk desk search calendar "standup" --from 2026-10-03T00:00:00Z --to 2026-10-04T00:00:00Z --calendar-id CALENDAR_ID --limit 20 --json
+```
+
+Only `grok-desk search calendar` uses this cache. `apple-desk calendar list` and
+`search` always read EventKit directly. Cache completeness describes the collected
+window, not remote synchronization or another person's availability.
+
+## Other local caches
+
+| Surface | Path | Contents and trigger |
 | --- | --- | --- |
-| Notes | `~/.cache/grok-notes/index.sqlite` | Delegates to `grok-notes reindex`. Not a second database. |
-| Messages | `~/.cache/grok-messages/index.sqlite` | Read-only `chat.db`. Chat metadata plus FTS on message text if Full Disk Access allows. `chat.db` is never copied. |
-| Contacts | `~/.cache/grok-contacts/index.sqlite` | **Off by default.** Only `onboard --index-contacts` or `reindex --only contacts`. |
-| Calendar | `~/.cache/grok-calendar/index.sqlite` | `reindex` runs `grok-calendar doctor` once. If that is ok, stores calendar names plus events from 30 days before today through 90 days after (inclusive). Override with `--past-days` / `--future-days` or `GROK_CALENDAR_PAST_DAYS` / `GROK_CALENDAR_FUTURE_DAYS` (each clamped to 0..366). One calendar index at a time via `grok-calendar list --live` (uid, title, start, end, all-day, calendar name). Only the Apple system calendar titled Scheduled Reminders is skipped by name. A wide window that times out is read in 14-day slices, and each slice is retried once. A slice over 800 events is split further by date. Doctor timeout or denied Automation is `pending_allow` and is not retried. No locations or notes. `grok-desk search calendar` and `grok-calendar list`/`search` read this cache unless `--live`. |
-| Reminders | `~/.cache/grok-reminders/index.sqlite` | `reindex` runs `grok-reminders doctor` once. If that is ok, stores list names plus incomplete reminders due today through 60 days (CLI maximum: id, list, title, due). No notes. Timeout or denied Automation is `pending_allow` and is not retried. |
+| Notes | `~/.cache/grok-notes/index.sqlite` | Explicit reindex delegates to `grok-notes reindex`; no second database. |
+| Messages | `~/.cache/grok-messages/index.sqlite` | Explicit reindex reads `chat.db` without copying it, subject to Full Disk Access; includes chat metadata and message text search. |
+| Contacts | `~/.cache/grok-contacts/index.sqlite` | Opt in with `reindex --only contacts` or `reindex --index-contacts`; stores phones and email addresses locally. |
+| Reminders | `~/.cache/grok-reminders/index.sqlite` | Explicit reindex collects incomplete reminders due today through 60 days with original backend limits; no notes. |
 
-Directories are mode `0700`. Database files are mode `0600`.
-
-Messages may store group chat metadata (guid, display name, counts). That does not change send rules: `grok-messages --to` stays 1:1, and a group send still needs `--chat-guid` after the user names the group.
-
-Onboard's short doctor loop does not call Calendar, Reminders, or Mail, because an Automation dialog can hang. Filling Calendar or Reminders happens in `reindex`, one attempt each. Mail is not indexed.
-
-`grok-focus` and `grok-safari` are reported by `doctor` when they exist. They are not indexed here.
+Directories use mode `0700`; database files use mode `0600`. Messages may include
+group chat metadata. Sending still requires the user's concrete authorization;
+the existence of a cache is not permission to send.
 
 ## Signature
 
-Optional one-line footer for the agent. Not appended by any send CLI. Not uploaded.
+The optional one-line footer is stored locally and never appended automatically
+by a send CLI. `doctor` reports whether it is set without printing it.
 
 ```bash
 grok-desk signature
-grok-desk signature --set "- Sent from Ada's Grok Bot"
+grok-desk signature --set "- Sent from my assistant"
 grok-desk signature --clear
 ```
 
-File: `~/.config/grok-desk/signature` (mode `0600`). One line, 160 characters max. Ask the user what they want. Do not invent a line. `doctor` reports set or unset and does not print the line.
+File: `~/.config/grok-desk/signature`, mode `0600`, at most 160 characters on one
+line. Ask the user for the desired text; do not invent it.

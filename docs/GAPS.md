@@ -1,21 +1,21 @@
 # Capability gaps (honest)
 
-Updated 2026-10-03. Versions: grok-calendar 0.1.5, grok-contacts 0.1.2, grok-desk 0.1.7, grok-focus 0.1.1, grok-icloud 0.1.1, grok-mail 0.1.2, grok-messages 0.2.8, grok-notes 0.2.1, grok-reminders 0.1.4, grok-safari 0.1.1, grok-shortcuts 0.1.2, grok-spotlight 0.1.0. Measured doctors for Notes, Contacts, and Messages are the earlier same-day snapshot in AUDIT.md. Calendar, Reminders, and Mail doctors were not re-run. See SCOPE_AUDIT.md for the full Mac + iOS 27 map.
+Combined build 0.2.0. Mail, Calendar, and Desk are updated; other surfaces retain their own versions. Historical reports in AUDIT.md and SCOPE_AUDIT.md describe the machine and build used at that time, not current permission status. Use passive `apple-desk doctor` for the current Mail/Calendar authorization report.
 
 ## Shipped limits
 
 - Notes 0.2.1: no pin/lock/drawings/scans/tables/audio; checklist checked-state is flaky; tags are hashtags in the cache (`tags --folder` does not start a live search)
 - Contacts 0.1.2: no phone or email search (`search --field phone|email` exits `unsupported_field` and does not call Contacts); no merge, photos, or vCard
 - Messages 0.2.8: shipped mark-read, history, unread, gated send, and 1:1 `react` (dry-run unless `--force`). Plain-text send; `--to` is 1:1; groups need `--chat-guid`; `attachments` is metadata for one chat (no absolute path, no file open, no send). `mark-read` does not write `chat.db`. `react` has no `--chat-guid` and refuses groups.
-- Calendar 0.1.5: Automation Allow still required; `show` can return recurrence plus attendee and alarm counts once Allow lands; create/update/delete have offline `--dry-run`
+- Calendar 0.2.0: requires EventKit Full Access; attendee/RSVP writes are unsupported. Offline dry runs do not verify target existence or calendar writability. Write verification checks the local store, not remote account synchronization.
 - Reminders 0.1.4: Automation Allow still required; `add --dry-run` validates the due format; `show` also reads remind-me date and all-day when Allow lands
-- Mail 0.1.2: no send; draft `--dry-run` checks subject and `@`; doctor not retried
+- Mail 0.2.0: Mail.app Automation; bounded search with anchored cursors is not a transactional snapshot. Body limits cap output, not retrieval. Plain-text drafts and explicit idempotent sends; no HTML, permanent deletion, or delivery confirmation. Archive/trash need explicit destinations.
 - Shortcuts 0.1.2: `run` needs `--force`; `--dry-run` only checks that the name is installed
 - iCloud 0.1.1: CloudDocs only; `summary` counts local bytes and evicted files; no download
 - Spotlight 0.1.0: paths only, Documents/Desktop by default; Keychains, Messages, Mail, HomeKit, Passes, Safari, Cookies refused
 - Focus 0.1.1: best-effort status from the local Do Not Disturb database on macOS 27. `set` without `--force` refuses. `--force` still needs an existing `--shortcut` and does not write the database. No doctor loop.
 - Safari 0.1.1: bookmarks and Reading List from Bookmarks.plist only. No history, passwords, cookies, edits, or URL opens. Unreadable plist exits `needs_full_disk_access` without opening System Settings.
-- Desk 0.1.7: onboarding and local indexes. Contacts cache stays off unless requested.
+- Desk 0.2.0: passive onboarding; indexing is explicit. Calendar indexes have a bounded window, freshness and coverage. Contacts collection remains opt-in. Live Calendar commands do not use the cache.
 
 ## Deliberately not built
 

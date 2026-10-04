@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""grok-desk 0.1.7 — onboard a Mac and build local search indexes.
+"""Passive Apple Desk onboarding/status and explicit local index operations.
 
-Caches stay under ~/.cache (0700 dirs, 0600 databases). Nothing is uploaded.
-No Keychain. No Passwords. Mail is not called. Calendar and Reminders are
-called only by reindex, once each, and only through their CLIs.
+Onboarding never prompts or indexes personal data. Mail and Calendar permission
+requests are separate explicit commands; legacy applications are version-only.
 """
 from __future__ import annotations
 
@@ -20,16 +19,8 @@ import calendar_index
 import reminders_index
 
 VERSION = common.VERSION
-SAFE_DOCTORS = (
-    "grok-notes",
-    "grok-contacts",
-    "grok-messages",
-    "grok-shortcuts",
-    "grok-icloud",
-    "grok-spotlight",
-    "grok-focus",
-    "grok-safari",
-)
+SAFE_DOCTORS = ("grok-mail", "grok-calendar")
+
 SURFACES = ("notes", "messages", "contacts", "calendar", "reminders")
 
 GAPS = [
@@ -37,7 +28,7 @@ GAPS = [
     "Notes uses the existing grok-notes cache (~/.cache/grok-notes/index.sqlite). There is no second notes database.",
     "Messages stores chat guid, display name, group flag, service, last date, and message count, plus an FTS index of message text when Full Disk Access allows the read. Send rules are unchanged: grok-messages --to is 1:1 only; groups need --chat-guid.",
     "The contacts cache (id, name, org, phones, emails) is off unless onboard --index-contacts or reindex --only contacts. It is not built by a normal onboard.",
-    "Calendar reindex runs grok-calendar doctor once. When that is authorized it stores calendar names and events in a portable window: past 30 days through the next 90 days (override with --past-days/--future-days or GROK_CALENDAR_PAST_DAYS and GROK_CALENDAR_FUTURE_DAYS, each 0..366). One calendar index at a time (uid, title, start, end, all-day, calendar name). Only the Apple system calendar titled Scheduled Reminders is skipped by name. A wide window that times out is read in 14-day slices, and each slice is retried once. A slice over 800 events is split further by date. Doctor timeout or denied Automation sets pending_allow and is not retried. Locations and notes are not stored. grok-calendar list/search and grok-desk search read this cache first.",
+    "Calendar indexing is explicit. It checks EventKit full access without prompting, then reads real calendar IDs and bounded pages in 31-day windows. The cache retains exact dates, exclusive ends, all-day values, time zones and occurrence references; it excludes notes and locations. Partial or stale caches never imply complete current results. Live grok-calendar reads use EventKit directly.",
     "Reminders reindex runs a names-only doctor, lean lists, then one incomplete-only collect (id, list, title, due). Notes are not stored. Timeout or denied Automation sets pending_allow and is not retried. Mail is not indexed. Focus and Safari are probed by doctor and are not part of this index.",
     "Keychain, Passwords, and HomeKit are out on purpose.",
     "An optional one-line signature lives in ~/.config/grok-desk/signature. grok-desk does not send messages and does not append that line.",
@@ -195,6 +186,8 @@ def status_rows() -> list[dict]:
                 row["windowTo"] = meta.get("window_to")
                 row["pastDays"] = meta.get("past_days")
                 row["futureDays"] = meta.get("future_days")
+                freshness = calendar_index.cache_status()
+                row.update({key: freshness.get(key) for key in ("status", "stale", "complete", "ageSeconds", "maxAgeSeconds")})
             if name == "reminders":
                 row["lists"] = _count(con, "lists")
             if name == "contacts" and meta.get("opt_in") != "1":
@@ -272,438 +265,90 @@ def do_reindex(full: bool, only: str | None, index_contacts: bool, past_days: in
     return {"ok": ok, "tool": common.TOOL, "version": VERSION, "indexes": indexes}
 
 
+SETTINGS_AUTOMATION = "System Settings → Privacy & Security → Automation → your terminal or agent → Mail."
+SETTINGS_CALENDARS = "System Settings → Privacy & Security → Calendars → your terminal or agent."
+
+
+def _parse_doctor_stdout(raw: str) -> dict:
+    try:
+        data = json.loads(raw or "")
+        return data if isinstance(data, dict) else {}
+    except (ValueError, TypeError):
+        return {}
+
+
+def _run_surface_doctor(bin_name: str, timeout: float, extra_args: list[str] | None = None) -> dict:
+    """No-prompt native probes only. A successful report need not grant access."""
+    short = bin_name.removeprefix("grok-")
+    path = common.which(bin_name)
+    entry = {"id": short, "name": short, "bin": bin_name, "present": bool(path),
+             "checked": "doctor", "ok": False, "authorized": False, "prompts": False}
+    if not path:
+        return dict(entry, error="missing_cli", exitCode=1, message=f"{bin_name} is not installed.")
+    entry["version"] = common.version_of(path)
+    if bin_name not in SAFE_DOCTORS:
+        # Older doctors may send Apple Events and display macOS consent dialogs.
+        return dict(entry, checked="version", ok=True, authorized=None, message="Version only; access was not tested.")
+    result = common.run_cmd([path, "doctor", "--json"], timeout, stdout_limit=16000)
+    report = common.unwrap_result(result)
+    data = report.get("data") or {}
+    status = data.get("authorization") or data.get("status") or data.get("automation") or "unknown"
+    if isinstance(status, dict):
+        status = status.get("status") or "unknown"
+    checked = data.get("checked") is not False and status not in {"timeout", "unknown", "unavailable", "not-probed"}
+    authorized = (data.get("fullAccess") is True and status == "fullAccess") if short == "calendar" else (status == "authorized" and data.get("allowed") is True)
+    authorized = authorized and checked and report.get("ok") is True
+    ready = authorized and (short != "mail" or data.get("running") is not False)
+    entry.update({"ok": ready, "authorized": authorized, "status": status, "probeChecked": checked,
+                  "doctor": data, "settingsPath": SETTINGS_CALENDARS if short == "calendar" else SETTINGS_AUTOMATION,
+                  "permissionCommand": "apple-desk permissions request --" + short})
+    if ready:
+        entry.update({"error": None, "exitCode": 0})
+        return entry
+    error = report.get("error")
+    if not error:
+        if status in {"notDetermined", "denied", "restricted", "writeOnly", "not-determined", "write-only"}:
+            error = "permission_required"
+        elif short == "mail" and data.get("running") is False:
+            error = "app_not_running"
+        else:
+            error = "authorization_unknown"
+    code = 3 if error == "permission_required" else 5 if error in {"timeout", "TIMEOUT", "app_not_running"} else 1
+    entry.update({"error": error, "exitCode": code, "message": report.get("message") or data.get("note") or
+                  "Access is not confirmed. A no-prompt report does not grant permission; use explicit setup from your agent host."})
+    return entry
+
+
 def safe_doctors() -> list[dict]:
     results = []
     for name in common.TOOLS:
-        path = common.which(name)
-        short = name.removeprefix("grok-")
-        if not path:
-            results.append({"name": short, "present": False, "checked": "missing"})
-            continue
-        version = common.version_of(path)
-        if name in common.VERSION_ONLY or name not in SAFE_DOCTORS:
-            results.append({"name": short, "present": True, "checked": "version", "version": version})
-            continue
-        doctor = common.run_cmd([path, "doctor", "--json"], 5)
-        entry = {"name": short, "present": True, "checked": "doctor", "version": version, "ok": doctor.get("ok")}
-        if doctor.get("error") == "timeout":
-            entry["ok"] = False
-            entry["error"] = "timeout"
-            entry["message"] = "doctor exceeded 5s and was not retried"
-        elif doctor.get("stdout", "").startswith("{"):
-            try:
-                data = json.loads(doctor["stdout"])
-            except json.JSONDecodeError:
-                data = {}
-            entry["ok"] = bool(data.get("ok", doctor.get("ok")))
-            if data.get("error"):
-                entry["error"] = data.get("error")
-            if data.get("code"):
-                entry["code"] = data.get("code")
-        elif not doctor.get("ok"):
-            entry["error"] = "doctor_failed"
-            entry["code"] = doctor.get("code")
-        results.append(entry)
+        short, path = name.removeprefix("grok-"), common.which(name)
+        if name in SAFE_DOCTORS:
+            results.append(_run_surface_doctor(name, 8))
+        else:
+            results.append({"id": short, "name": short, "present": bool(path), "checked": "version" if path else "missing",
+                            "version": common.version_of(path) if path else None, "ok": bool(path), "authorized": None,
+                            "message": "Version only; legacy app access is not probed during passive status."})
     return results
 
 
 def unified_status_doctors() -> list[dict]:
-    """Lean probes for `grok-desk status`. No prompts. Bounded timeouts.
-
-    SAFE_DOCTORS run at 5s. Calendar and Reminders use their own lean doctors at 8s
-    (count-only; not a full event walk). Mail stays version-only — Mail.app doctor can hang.
-    """
-    results = safe_doctors()
-    by_name = {row.get("name"): row for row in results}
-    # Upgrade calendar/reminders from version-only to lean doctor when the CLI exists.
-    for name, timeout in (("grok-calendar", 8), ("grok-reminders", 8)):
-        short = name.removeprefix("grok-")
-        path = common.which(name)
-        if not path:
-            by_name[short] = {"name": short, "present": False, "checked": "missing"}
-            continue
-        version = common.version_of(path)
-        doctor = common.run_cmd([path, "doctor", "--json"], timeout)
-        entry = {"name": short, "present": True, "checked": "doctor", "version": version, "ok": doctor.get("ok")}
-        if doctor.get("error") == "timeout":
-            entry["ok"] = False
-            entry["error"] = "timeout"
-            entry["message"] = f"doctor exceeded {timeout}s and was not retried"
-        elif (doctor.get("stdout") or "").startswith("{"):
-            try:
-                data = json.loads(doctor["stdout"])
-            except json.JSONDecodeError:
-                data = {}
-            entry["ok"] = bool(data.get("ok", doctor.get("ok")))
-            if data.get("error"):
-                entry["error"] = data.get("error")
-            if data.get("code"):
-                entry["code"] = data.get("code")
-            # Portable counts only — never dump event/reminder titles here.
-            for key in ("calendars", "lists", "appVersion", "version"):
-                if key in data and key not in entry:
-                    entry[key] = data[key]
-        elif not doctor.get("ok"):
-            entry["error"] = "doctor_failed"
-            entry["code"] = doctor.get("code")
-        by_name[short] = entry
-    # Stable order matching common.TOOLS
-    ordered = []
-    for name in common.TOOLS:
-        short = name.removeprefix("grok-")
-        if short in by_name:
-            ordered.append(by_name.pop(short))
-    ordered.extend(by_name.values())
-    return ordered
-
-
-
-# System Settings paths printed on guided-onboard failure (generic; no machine names).
-SETTINGS_FDA = (
-    "System Settings → Privacy & Security → Full Disk Access → enable Grok Bot and "
-    "Grok Bot Helper, then quit and reopen Grok Bot."
-)
-SETTINGS_AUTOMATION = (
-    "System Settings → Privacy & Security → Automation → Grok Bot (and Grok Bot Helper) → {app}."
-)
-SETTINGS_CALENDARS = (
-    "System Settings → Privacy & Security → Calendars → enable Grok Bot and Grok Bot Helper, "
-    "then quit and reopen Grok Bot."
-)
-
-
-def _parse_doctor_stdout(raw: str) -> dict:
-    raw = (raw or "").strip()
-    if not raw.startswith("{"):
-        return {}
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
-def _run_surface_doctor(bin_name: str, timeout: float, extra_args: list[str] | None = None) -> dict:
-    """One doctor attempt. Never retries. Returns a gate-shaped dict."""
-    path = common.which(bin_name)
-    short = bin_name.removeprefix("grok-")
-    if not path:
-        return {
-            "id": short,
-            "name": short,
-            "bin": bin_name,
-            "ok": False,
-            "present": False,
-            "error": "missing_cli",
-            "exitCode": 2,
-            "message": f"{bin_name} is not on PATH. Finish Install (docs/INSTALL.md), then re-run.",
-            "settingsPath": None,
-        }
-    cmd = [path, "doctor", "--json"] + (extra_args or [])
-    result = common.run_cmd(cmd, timeout, stdout_limit=16000)
-    version = common.version_of(path)
-    data = _parse_doctor_stdout(result.get("stdout") or "")
-    code = int(result.get("code") or (0 if result.get("ok") else 1))
-    if result.get("error") == "timeout":
-        return {
-            "id": short,
-            "name": short,
-            "bin": bin_name,
-            "ok": False,
-            "present": True,
-            "version": version,
-            "error": "timeout",
-            "exitCode": 4,
-            "message": f"{bin_name} doctor exceeded {timeout}s (hang or dialog). Do not retry while AFK.",
-            "settingsPath": SETTINGS_AUTOMATION.format(app=short.title()),
-            "doctor": data,
-        }
-    err = data.get("error") or result.get("error")
-    ok = bool(data.get("ok", result.get("ok")))
-    settings = None
-    message = data.get("message") or data.get("historyMessage") or ""
-    # Normalize TCC-style failures into Settings paths.
-    blob = " ".join(
-        str(x) for x in (err, message, data.get("automation"), json.dumps(data.get("history") or {})) if x
-    )
-    if code == 5 or err == "needs_full_disk_access" or "needs_full_disk_access" in blob:
-        ok = False
-        code = 5
-        err = "needs_full_disk_access"
-        settings = SETTINGS_FDA
-        message = message or "Messages history needs Full Disk Access. Send does not."
-    elif code == 3 or err in {"automation_denied", "accessibility_denied", "calendar_tcc"} or "-1743" in blob:
-        ok = False
-        code = 3
-        err = err or "automation_denied"
-        if err == "calendar_tcc" or "calendar_tcc" in blob:
-            settings = SETTINGS_CALENDARS
-        else:
-            app = "Calendar" if short == "calendar" else short.title()
-            if short == "messages":
-                app = "Messages"
-            elif short == "contacts":
-                app = "Contacts"
-            settings = SETTINGS_AUTOMATION.format(app=app)
-        message = message or "Not authorized to send Apple events (-1743). Stop. Do not loop."
-    elif code == 4 or err in {"automation_timeout", "timeout"} or "-1712" in blob:
-        ok = False
-        code = 4
-        err = err or "automation_timeout"
-        settings = SETTINGS_AUTOMATION.format(app=short.title() if short != "messages" else "Messages")
-        message = message or "Timed out (-1712). Hang or dialog still up. Do not loop while AFK."
-    return {
-        "id": short,
-        "name": short,
-        "bin": bin_name,
-        "ok": ok,
-        "present": True,
-        "version": version,
-        "error": None if ok else (err or "doctor_failed"),
-        "exitCode": 0 if ok else code,
-        "message": message or None,
-        "settingsPath": None if ok else settings,
-        "doctor": data,
-        "automation": data.get("automation"),
-        "historyAvailable": (data.get("history") or {}).get("available") if isinstance(data.get("history"), dict) else data.get("history"),
-    }
+    return safe_doctors()
 
 
 def do_guided_onboard(index_contacts: bool, skip_optional: bool = False, skip_signature: bool = False) -> tuple[dict, int]:
-    """Walk permission gates one-by-one. Stop at first hard failure.
-
-    Returns (payload, process_exit_code). Re-run after the user clicks Allow.
-    """
-    links = [common.link_if_needed(name) for name in ("grok-desk",) + common.TOOLS]
-    gates: list[dict] = []
-    stopped = None
-
-    def fail(gate: dict) -> tuple[dict, int]:
-        nonlocal stopped
-        stopped = gate
-        gates.append(gate)
-        code = int(gate.get("exitCode") or 1)
-        payload = {
-            "ok": False,
-            "tool": common.TOOL,
-            "version": VERSION,
-            "mode": "guided",
-            "links": links,
-            "gates": gates,
-            "stoppedAt": gate.get("id"),
-            "nextSettingsPath": gate.get("settingsPath"),
-            "message": gate.get("message"),
-            "hint": "Fix the Settings path above, then re-run: grok-desk onboard --guided",
-        }
-        return payload, code
-
-    # 1) Messages history — Full Disk Access
-    msg = _run_surface_doctor("grok-messages", 8)
-    hist = msg.get("doctor") or {}
-    history = hist.get("history") if isinstance(hist.get("history"), dict) else {}
-    hist_flag = history.get("available")
-    if hist_flag is None:
-        hist_flag = msg.get("historyAvailable")
-    # Explicit false / exit 5 => FDA fail. True or ok doctor without FDA error => pass.
-    hist_denied = (
-        msg.get("error") == "needs_full_disk_access"
-        or msg.get("exitCode") == 5
-        or hist_flag is False
-    )
-    hist_ok = (not hist_denied) and (hist_flag is True or (msg.get("ok") and hist_flag is not False))
-    if msg.get("error") == "needs_full_disk_access" or (hist_denied and not hist_ok):
-        gate = dict(msg)
-        gate.update({
-            "id": "messages-fda",
-            "title": "Full Disk Access (Messages history)",
-            "why": "Read chat.db for history, unread, and search. Send does not need Full Disk Access.",
-            "ok": False,
-            "error": "needs_full_disk_access",
-            "exitCode": 5,
-            "settingsPath": SETTINGS_FDA,
-            "message": gate.get("message") or "Messages history needs Full Disk Access.",
-        })
-        return fail(gate)
-    if msg.get("exitCode") in (3, 4) and not msg.get("ok"):
-        # Hard automation failure before we can trust history — still report as messages gate.
-        gate = dict(msg)
-        gate["id"] = "messages-automation"
-        gate["title"] = "Automation → Messages"
-        gate["why"] = "Send and the Messages scripting chat list."
-        gate["settingsPath"] = gate.get("settingsPath") or SETTINGS_AUTOMATION.format(app="Messages")
-        return fail(gate)
-    gates.append({
-        "id": "messages-fda",
-        "title": "Full Disk Access (Messages history)",
-        "ok": True,
-        "version": msg.get("version"),
-        "why": "Read chat.db for history, unread, and search.",
-    })
-
-    # 2) Messages Automation
-    auto = (msg.get("automation") or (msg.get("doctor") or {}).get("automation") or "")
-    if not msg.get("ok") or str(auto).lower() not in {"authorized", "ok", "allowed", ""}:
-        # empty automation with ok=true still counts as pass (older CLIs)
-        if not msg.get("ok") or str(auto).lower() in {"denied", "unauthorized", "not_authorized"}:
-            gate = dict(msg)
-            gate.update({
-                "id": "messages-automation",
-                "title": "Automation → Messages",
-                "why": "Send and the Messages scripting chat list.",
-                "ok": False,
-                "exitCode": msg.get("exitCode") or 3,
-                "settingsPath": SETTINGS_AUTOMATION.format(app="Messages"),
-                "message": msg.get("message") or "Messages Automation not authorized.",
-            })
-            return fail(gate)
-    if not msg.get("ok"):
-        gate = dict(msg)
-        gate.update({
-            "id": "messages-automation",
-            "title": "Automation → Messages",
-            "why": "Send and the Messages scripting chat list.",
-            "settingsPath": msg.get("settingsPath") or SETTINGS_AUTOMATION.format(app="Messages"),
-        })
-        return fail(gate)
-    gates.append({
-        "id": "messages-automation",
-        "title": "Automation → Messages",
-        "ok": True,
-        "version": msg.get("version"),
-        "automation": auto or "authorized",
-    })
-
-    # 3–7 required app gates
-    required = [
-        ("notes", "grok-notes", 8, None, "Notes", "Notes.app folders and note bodies."),
-        ("contacts", "grok-contacts", 12, ["--live"], "Contacts", "Live Contacts.app (cache-only doctor is not this gate)."),
-        ("calendar", "grok-calendar", 10, None, "Calendar", "Calendar.app lean doctor (count-only)."),
-        ("reminders", "grok-reminders", 10, None, "Reminders", "Reminders.app lean doctor (names-only)."),
-        ("shortcuts", "grok-shortcuts", 8, None, "Shortcuts", "List shortcuts via /usr/bin/shortcuts."),
-    ]
-    for gid, bin_name, timeout, extra, app, why in required:
-        row = _run_surface_doctor(bin_name, timeout, extra)
-        row["id"] = gid
-        row["title"] = f"Automation → {app}" if gid != "shortcuts" else "Shortcuts"
-        row["why"] = why
-        if not row.get("ok"):
-            if not row.get("settingsPath"):
-                if row.get("error") == "calendar_tcc":
-                    row["settingsPath"] = SETTINGS_CALENDARS
-                elif gid == "shortcuts":
-                    row["settingsPath"] = None
-                    row["message"] = row.get("message") or "Shortcuts CLI failed. Finish Install, then re-run."
-                else:
-                    row["settingsPath"] = SETTINGS_AUTOMATION.format(app=app)
-            # Calendar: Automation ok but TCC for calendars data
-            doc = row.get("doctor") or {}
-            if gid == "calendar" and (doc.get("error") == "calendar_tcc" or row.get("error") == "calendar_tcc"):
-                row["settingsPath"] = SETTINGS_CALENDARS
-            return fail(row)
-        gates.append({"id": gid, "title": row["title"], "ok": True, "version": row.get("version"), "why": why})
-
-    # 8–9 optional
-    optional = [
-        ("mail", "grok-mail", 5, "Mail", True),
-        ("icloud", "grok-icloud", 8, "iCloud Drive", False),
-    ]
-    for gid, bin_name, timeout, label, version_only in optional:
-        if skip_optional:
-            gates.append({"id": gid, "title": label, "ok": True, "optional": True, "skipped": True})
-            continue
-        path = common.which(bin_name)
-        if not path:
-            gates.append({
-                "id": gid,
-                "title": label,
-                "ok": True,
-                "optional": True,
-                "present": False,
-                "message": f"{bin_name} not installed yet (optional).",
-            })
-            continue
-        if version_only or bin_name in common.VERSION_ONLY:
-            ver = common.version_of(path)
-            gates.append({
-                "id": gid,
-                "title": label,
-                "ok": True,
-                "optional": True,
-                "checked": "version",
-                "version": ver,
-                "message": "Optional. Prefer a cloud mail connector when possible. Automation → Mail if you use Mail.app.",
-                "settingsPath": SETTINGS_AUTOMATION.format(app="Mail"),
-            })
-            continue
-        row = _run_surface_doctor(bin_name, timeout)
-        row["id"] = gid
-        row["title"] = label
-        row["optional"] = True
-        if not row.get("ok"):
-            # Optional: record and continue (do not stop), unless hard -1743 and user cares — still continue.
-            row["continued"] = True
-            row["message"] = (row.get("message") or "Optional gate failed.") + " Continuing. Do not loop."
-            if not row.get("settingsPath") and gid == "mail":
-                row["settingsPath"] = SETTINGS_AUTOMATION.format(app="Mail")
-        gates.append(row)
-
-    # 10) Signature — ask, never bake a default line
-    line = common.read_signature()
-    if line is None and not skip_signature:
-        gate = {
-            "id": "signature",
-            "title": "Outgoing signature",
-            "ok": False,
-            "error": "needs_signature",
-            "exitCode": 2,
-            "settingsPath": None,
-            "why": "Optional footer for drafts the bot shows before send. The send CLI does not append it.",
-            "message": (
-                "No signature stored. Ask the user how outgoing messages should be signed "
-                "(or none). Then run: grok-desk signature --set YOUR_LINE. "
-                "If they want none: grok-desk onboard --guided --skip-signature"
-            ),
-            "nextCommand": "grok-desk signature --set YOUR_LINE  # or onboard --guided --skip-signature",
-        }
-        return fail(gate)
-    gates.append({
-        "id": "signature",
-        "title": "Outgoing signature",
-        "ok": True,
-        "set": bool(line),
-        "skipped": bool(line is None and skip_signature),
-        "message": None if line else "Signature left unset (--skip-signature).",
-    })
-
-    # 11) Reindex once
-    indexed = do_reindex(False, None, index_contacts)
-    gate = {
-        "id": "reindex",
-        "title": "Local reindex",
-        "ok": bool(indexed.get("ok")),
-        "indexes": indexed.get("indexes"),
-    }
-    if not gate["ok"]:
-        # pending_allow on a surface — point at Automation, do not loop
-        gate["error"] = "reindex_incomplete"
-        gate["exitCode"] = 1
-        gate["message"] = "Reindex did not fully succeed. Fix pending_allow Automation, then: grok-desk reindex"
-        gate["settingsPath"] = SETTINGS_AUTOMATION.format(app="Calendar / Reminders / Notes")
-        return fail(gate)
-    gates.append(gate)
-
-    payload = {
-        "ok": True,
-        "tool": common.TOOL,
-        "version": VERSION,
-        "mode": "guided",
-        "links": links,
-        "gates": gates,
-        "indexes": indexed.get("indexes"),
-        "signatureSet": bool(line),
-        "message": "Guided onboard complete.",
-    }
-    return payload, 0
+    """Present passive setup findings; permission requests and indexing are explicit."""
+    doctors = safe_doctors()
+    failed = next((row for row in doctors if not row.get("ok")), None)
+    payload = {"ok": failed is None, "tool": common.TOOL, "version": VERSION, "mode": "guided", "passive": True,
+               "prompts": False, "links": [], "gates": doctors, "indexes": [],
+               "signatureSet": bool(common.read_signature()),
+               "message": "Passive setup checks finished. No permission requests or indexing were performed.",
+               "nextCommands": ["apple-desk permissions request --mail", "apple-desk permissions request --calendar", "apple-desk reindex"]}
+    if failed:
+        payload.update({"stoppedAt": failed.get("id"), "nextSettingsPath": failed.get("settingsPath"),
+                        "hint": failed.get("permissionCommand") or "Install the missing CLI, then repeat passive onboarding."})
+    return payload, 0 if failed is None else int(failed.get("exitCode") or 1)
 
 
 def emit_guided(data: dict, as_json: bool) -> None:
@@ -728,19 +373,11 @@ def emit_guided(data: dict, as_json: bool) -> None:
             print(f"       → {gate['settingsPath']}")
 
 def do_onboard(full: bool, index_contacts: bool) -> dict:
-    links = [common.link_if_needed(name) for name in ("grok-desk",) + common.TOOLS]
     doctors = safe_doctors()
-    indexed = do_reindex(full, None, index_contacts)
-    ok = indexed["ok"]
-    return {
-        "ok": ok,
-        "tool": common.TOOL,
-        "version": VERSION,
-        "links": links,
-        "doctors": doctors,
-        "indexes": indexed["indexes"],
-    }
-
+    return {"ok": all(row.get("ok") for row in doctors), "tool": common.TOOL, "version": VERSION,
+            "passive": True, "prompts": False, "links": [], "doctors": doctors, "indexes": [],
+            "message": "No permissions were requested and no personal data was indexed. Run explicit reindex when ready.",
+            "nextCommands": ["apple-desk permissions request --mail", "apple-desk permissions request --calendar", "apple-desk reindex"]}
 
 
 def _fts_query(text: str) -> str:
@@ -759,12 +396,18 @@ def _fts_query(text: str) -> str:
     return " AND ".join(parts[:8])
 
 
-def do_search(surface: str, query: str, limit: int) -> dict:
+def do_search(surface: str, query: str, limit: int, start: str | None = None, end: str | None = None, calendar_id: str | None = None) -> dict:
     """Query a local index when present. No Apple Events."""
     import sqlite3
     q = (query or "").strip()
     if len(q) < 2:
         return {"ok": False, "error": "missing_query", "message": "Search needs at least 2 characters."}
+    if not 1 <= limit <= 1000:
+        return {"ok": False, "error": "invalid_limit", "message": "--limit must be 1..1000."}
+    if surface == "calendar":
+        return calendar_index.cached_search(q, limit, start, end, calendar_id)
+    if start is not None or end is not None or calendar_id is not None:
+        return {"ok": False, "error": "invalid_option", "message": "Window and calendar filters are only supported for calendar cache searches."}
     path = common.db_path(f"grok-{surface}")
     if not path.exists():
         return {"ok": False, "error": "no_index", "message": f"No {surface} index. Run: grok-desk reindex --only {surface}"}
@@ -882,18 +525,18 @@ def build_parser() -> argparse.ArgumentParser:
     doctor = sub.add_parser("doctor", help="Which CLIs and caches exist")
     add_json(doctor)
 
-    onboard = sub.add_parser("onboard", help="Link missing bins, safe checks, then reindex")
-    onboard.add_argument("--full", action="store_true")
-    onboard.add_argument("--index-contacts", action="store_true", help="Opt in to the contacts phone/email cache")
+    onboard = sub.add_parser("onboard", help="Passive setup checks; no permission requests or indexing")
+    onboard.add_argument("--full", action="store_true", help="Compatibility option; onboarding does not build indexes")
+    onboard.add_argument("--index-contacts", action="store_true", help="Compatibility option; use reindex --only contacts to build a cache")
     onboard.add_argument(
         "--guided",
         action="store_true",
-        help="Walk Mac permission gates one-by-one; stop on first failure with System Settings path",
+        help="Show passive setup gates and explicit permission commands",
     )
     onboard.add_argument(
         "--skip-signature",
         action="store_true",
-        help="With --guided, continue reindex when no signature is stored (user chose none)",
+        help="Compatibility option; passive onboarding does not require a signature",
     )
     add_json(onboard)
 
@@ -915,6 +558,9 @@ def build_parser() -> argparse.ArgumentParser:
     search.add_argument("surface", choices=SURFACES)
     search.add_argument("query")
     search.add_argument("--limit", type=int, default=20)
+    search.add_argument("--from", dest="start", help="Calendar cache lower bound, ISO timestamp with UTC offset")
+    search.add_argument("--to", dest="end", help="Calendar cache exclusive upper bound, ISO timestamp with UTC offset")
+    search.add_argument("--calendar-id", help="Actual calendar ID for calendar cache searches")
     add_json(search)
 
     signature = sub.add_parser("signature", help="Show or set the one-line outgoing signature")
@@ -948,8 +594,7 @@ def main(argv=None) -> int:
         emit(data, as_json)
         return 0
     if args.cmd == "status":
-        # Unified rollup: local caches + lean doctor/version probes (apple-tools-style status).
-        # Focus/Safari are doctor-only shell-outs; Passwords/HomeKit stay out.
+        # Passive native Mail/Calendar authorization plus legacy version checks.
         doctors = unified_status_doctors()
         summary = status_rows()
         ok = True
@@ -986,7 +631,7 @@ def main(argv=None) -> int:
         return 0 if data.get("ok") else 1
 
     if args.cmd == "search":
-        data = do_search(args.surface, args.query, args.limit)
+        data = do_search(args.surface, args.query, args.limit, args.start, args.end, args.calendar_id)
         emit(data, as_json)
         return 0 if data.get("ok") else 1
     if args.cmd == "signature":
