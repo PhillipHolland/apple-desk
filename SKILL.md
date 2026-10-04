@@ -37,7 +37,7 @@ grok-desk onboard --guided
 
 Order: Full Disk Access (Messages history) → Automation Messages → Notes → Contacts → Calendar → Reminders → Shortcuts → optional Mail/iCloud → **ask** signature → reindex.
 
-On failure the CLI prints the exact **System Settings** path. Use the recovery card below. Do not loop doctors while AFK. Full walk: `docs/ONBOARD.md`.
+On failure the CLI prints the exact **System Settings** path. Use the exit-code card below. Do not loop doctors while AFK. Full walk: `docs/ONBOARD.md`.
 
 Ask once how outgoing messages should be signed. Store with `grok-desk signature --set "…"`, or leave unset. **No product default. Never bake a person's line into the skill or docs.**
 
@@ -69,15 +69,18 @@ Before an outbound send or react, include `grok-focus status` in the draft. Reci
 
 Read-only unread counts, today's reminders, and the calendar: `docs/MORNING_BRIEFING.md`.
 
-## Recovery
+## Exit-code card
 
-| Signal | Action |
+One failure, one human step, then stop. Do not loop the command.
+
+| Code | Next human step |
 | --- | --- |
-| 3, -1743 | Stop and open the Settings path. No loop. |
-| 4 | Stop for one Allow click. |
-| 5 | Full Disk Access. |
-| -1712 | Quit and relaunch Messages once, then one send, then stop. |
-| screen_locked | mark-read only. Unlock, then one retry. Never loop. |
+| 3 | Open System Settings → Privacy & Security → Automation and turn on the named app for Grok Bot and Grok Bot Helper. Do not loop. |
+| 4 | Click the Allow dialog once if it is still on screen. Do not loop. |
+| 5 | Open System Settings → Privacy & Security → Full Disk Access, enable Grok Bot and Grok Bot Helper, then quit and reopen Grok Bot. Do not loop. |
+| -1743 | Not authorized to send Apple events. Open the same Automation switch as exit 3 and click Allow once. Do not loop. |
+| -1712 | Quit Messages and open it once, then retry that same command once. Do not loop. |
+| screen_locked | Unlock the Mac, then retry mark-read once. Do not loop. Unread, doctor, and other non-UI commands are not blocked by the lock. |
 
 ## Consent and Messages send
 
@@ -85,7 +88,7 @@ Read-only unread counts, today's reminders, and the calendar: `docs/MORNING_BRIE
 - Before an outbound send or react, the draft confirmation must include the output of `grok-focus status`. Focus filters the sender's UI more than the recipient's notifications. Do not block the send. Do not refuse `--force` because Focus is on. Do not activate Messages. Do not call `grok-focus set`.
 - **1:1 send** is Messages **participant** only. No `activate`, no menus. `--to` never targets a group.
 - **Group send** only with `--chat-guid` after the user named that group.
-- Send failures use the recovery card: **4** stops for one Allow click; **-1712** quits and relaunches Messages once, then one send, then stop.
+- Send failures use the exit-code card: **4** stops for one Allow click; **-1712** quits and relaunches Messages once, then one retry, then stop.
 - Do not write `chat.db`. Read-only confirm of one outgoing row is ok after an approved send.
 - `mark-read` exits `screen_locked` before activate when locked. `react --force` does not pre-check the lock and does not activate Messages. Vendor `imsg react` activates Messages itself and exits -2700 if Messages is not in front, so a locked screen still cannot finish a tapback. imsg tapback is not a fallback: it needs SIP disabled and imsg launch, which Apple Desk will not do.
 - Deletes and other writes need `--force` and an id the user named.

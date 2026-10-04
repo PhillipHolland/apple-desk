@@ -16,11 +16,17 @@ Plain `grok-desk onboard` still links missing bins, runs the short safe doctor r
 
 Re-run the same command after the user clicks Allow. Passing gates are skipped. There is no AFK retry loop inside the command.
 
-## First win (after the minimum gate only)
+## First win: unread digest
 
-- `grok-messages unread` (Full Disk Access + Messages automation)
-- `grok-notes search` (Notes automation)
-- `grok-reminders today` (Reminders automation)
+After gate 1 (Full Disk Access) and gate 2 (Automation → Messages) only. No other app is required.
+
+```bash
+grok-messages unread
+```
+
+The reply is counts: unread messages, unread chats, and a short page of chat labels. It does not print message text, and it does not mark anything read. Add `--json` for the same counts. If it exits 3, 4, 5, -1743, or -1712, follow the exit-code card once. Do not loop.
+
+Later, after that app's own gate: `grok-notes search` (Notes) and `grok-reminders today` (Reminders).
 
 ## Gate order
 
@@ -40,17 +46,20 @@ Re-run the same command after the user clicks Allow. Passing gates are skipped. 
 
 Calendar and Reminders may also need Privacy & Security → Calendars or Reminders.
 
-## Exit codes the bot must honor
+Exit 0 means that gate passed. Exit 2 means bad arguments, or guided onboard stopped because the signature is unset: ask the user, and do not invent a line.
 
-| Code / signal | Meaning | Bot action |
-| --- | --- | --- |
-| 0 | Gate or full guided pass | Continue or finish |
-| 2 | Bad args / signature unset (guided stopped to ask) | Ask the user; do not invent a line |
-| 3, -1743 | Not authorized to send Apple events | Stop and open the Settings path. No loop. |
-| 4 | Automation dialog still up | Stop for one Allow click. |
-| 5 | Needs Full Disk Access (Messages history) | Full Disk Access. |
-| -1712 | Messages hang on send | Quit and relaunch Messages once, then one send, then stop. |
-| screen_locked | Screen is locked before UI | Unlock, then one retry. Never loop. |
+## Exit-code card
+
+One failure, one human step, then stop. Do not loop the command.
+
+| Code | Next human step |
+| --- | --- |
+| 3 | Open System Settings → Privacy & Security → Automation and turn on the named app for Grok Bot and Grok Bot Helper. Do not loop. |
+| 4 | Click the Allow dialog once if it is still on screen. Do not loop. |
+| 5 | Open System Settings → Privacy & Security → Full Disk Access, enable Grok Bot and Grok Bot Helper, then quit and reopen Grok Bot. Do not loop. |
+| -1743 | Not authorized to send Apple events. Open the same Automation switch as exit 3 and click Allow once. Do not loop. |
+| -1712 | Quit Messages and open it once, then retry that same command once. Do not loop. |
+| screen_locked | Unlock the Mac, then retry mark-read once. Do not loop. Unread, doctor, and other non-UI commands are not blocked by the lock. |
 
 ## Messages send rules (preserve; generic)
 
