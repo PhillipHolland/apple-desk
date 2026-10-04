@@ -107,6 +107,63 @@ def which(name: str) -> str | None:
     return None
 
 
+def checkout_root() -> Path:
+    """Repo root for this grok-desk file (cli/grok-desk/lib -> apple-desk)."""
+    return Path(__file__).resolve().parents[3]
+
+
+def _path_inside(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+    except (ValueError, OSError):
+        return False
+    return True
+
+
+def outside_checkout_hints(path_env: str | None = None, root: Path | None = None) -> list[str]:
+    """Hint lines for grok-* executables on PATH that resolve outside this checkout.
+
+    The first executable of each name wins, same as a shell search. Returns
+    lines only: does not relink, copy, or run the executables.
+    """
+    if path_env is None:
+        path_env = os.environ.get("PATH", "")
+    root_path = checkout_root() if root is None else root
+    found: dict[str, Path] = {}
+    for folder in path_env.split(os.pathsep):
+        if not folder:
+            continue
+        directory = Path(folder)
+        try:
+            entries = list(directory.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            name = entry.name
+            if not name.startswith("grok-") or name in found:
+                continue
+            try:
+                executable = entry.is_file() and os.access(entry, os.X_OK)
+            except OSError:
+                continue
+            if executable:
+                found[name] = entry
+    lines = []
+    for name in sorted(found):
+        entry = found[name]
+        try:
+            resolved = entry.resolve()
+        except OSError:
+            continue
+        if _path_inside(resolved, root_path):
+            continue
+        lines.append(
+            "hint: %s on PATH (%s) resolves outside this checkout (%s). Not relinked."
+            % (name, entry, resolved)
+        )
+    return lines
+
+
 def tool_sources(name: str) -> list[Path]:
     """Prefer the apple-desk checkout; fall back to a sibling ~/Developer/grok-* tree."""
     home = Path.home()

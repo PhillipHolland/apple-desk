@@ -96,6 +96,8 @@ def emit(data: dict, as_json: bool) -> None:
         print(sig["signature"])
     elif isinstance(sig, dict):
         print("signature: unset")
+    for line in data.get("pathHints") or []:
+        print(line)
 
 
 def probe_tools() -> list[dict]:
@@ -940,6 +942,7 @@ def main(argv=None) -> int:
             "tools": probe_tools(),
             "caches": probe_caches(),
             "signature": {"set": common.read_signature() is not None, "path": str(common.signature_path())},
+            "pathHints": common.outside_checkout_hints(),
         }
         emit(data, as_json)
         return 0
