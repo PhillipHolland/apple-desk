@@ -8,7 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-VERSION = "0.1.2"
+VERSION = "0.1.3"
 LIB = Path(__file__).resolve().parent / "contacts.js"
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import cache as contactcache  # noqa: E402
@@ -17,6 +17,7 @@ import cache as contactcache  # noqa: E402
 GAPS = [
     "Direct CNContactStore is not used. A command-line binary has no NSContactsUsageDescription, so macOS often will not show the Contacts privacy prompt. This CLI asks Contacts.app over Apple Events instead. The grant is Automation (Grok Bot or Terminal → Contacts), same shape as grok-notes.",
     "Search and show read ~/.cache/grok-contacts when that index status is ok (grok-desk reindex --only contacts). Pass --live to ask Contacts.app. Phone and email search uses the index only. Live Contacts whose() cannot filter phones (error -2700), and walking every card is about 70ms each. search --field phone|email with no index exits unsupported_field and does not call Contacts.",
+    "Nickname is a person property, so search --field nickname can use Contacts whose() or the index after reindex. Relationship (parent, spouse, sibling, friend, manager) is a related-name label. whose() has no relatedNames property, so it cannot filter those labels. search --field relationship reads the index only and does not call Contacts. sibling also matches brother and sister. parent also matches mother and father. show returns nickname and related names already on the card. An older index omits them until reindex rather than inventing them. This does not write contacts.",
     "Cache search prints phones and emails stored in the local index. Live search and groups do not print phone numbers, emails, or street addresses. show does, for one card.",
     "No account picker. Contacts scripting returns the unified cards Contacts.app shows, not a per-iCloud-account split.",
     "Cannot merge, unlink, or split linked contacts. Cannot ignore Siri suggestions or the Duplicates pile.",
@@ -122,7 +123,7 @@ def emit(data, as_json, text_fn):
             "needs_force", "needs_allow_large", "unsupported", "missing_target",
             "missing_name", "missing_change", "missing_query", "ambiguous",
             "bad_request", "not_found", "already_exists", "query_too_broad",
-            "unsupported_field",
+            "unsupported_field", "needs_reindex",
         }
         code = 2 if data.get("error") in soft else 1
         if as_json:
@@ -195,6 +196,18 @@ def _first_value(row, key):
     return str(first)
 
 
+def _relationship_labels(row):
+    labels = []
+    for rel in row.get("relationships") or []:
+        if isinstance(rel, dict):
+            label = rel.get("label") or ""
+        else:
+            label = str(rel or "")
+        if label and label not in labels:
+            labels.append(label)
+    return labels
+
+
 def print_search(data):
     source = data.get("source") or "live"
     print(f"{data.get('count')} match(es) for {data.get('query')!r}  [{source}]")
@@ -203,7 +216,13 @@ def print_search(data):
         suffix = f"  · {extra}" if extra and extra != row.get("name") else ""
         phone = _first_value(row, "phones")
         phone_bit = f"  {phone}" if phone else ""
-        print(f"  {row.get('name')}{suffix}{phone_bit}  {row.get('id')}")
+        nick = row.get("nickname") or ""
+        nick_bit = f"  nickname {nick}" if nick else ""
+        labels = _relationship_labels(row)
+        rel_bit = ""
+        if data.get("field") == "relationship" and labels:
+            rel_bit = "  relationship " + ", ".join(labels)
+        print(f"  {row.get('name')}{suffix}{nick_bit}{rel_bit}{phone_bit}  {row.get('id')}")
     if data.get("truncated"):
         print("(showing the first matches; pass --limit or a narrower name)")
     if source == "cache":
@@ -225,6 +244,12 @@ def print_show(data):
         bits.append(c["jobTitle"])
     if bits:
         print("  " + " · ".join(bits))
+    if c.get("nickname"):
+        print(f"  nickname: {c['nickname']}")
+    for rel in c.get("relationships") or []:
+        label = rel.get("label") or "other"
+        name = rel.get("name") or ""
+        print(f"  relationship ({label}): {name}".rstrip())
     for key, title in (("phones", "phone"), ("emails", "email"), ("urls", "url")):
         for row in c.get(key) or []:
             print(f"  {title} ({row.get('label') or 'other'}): {row.get('value')}  [{row.get('id')}]")
@@ -238,6 +263,8 @@ def print_show(data):
     groups = c.get("groups") or []
     if groups:
         print("  groups: " + ", ".join(g.get("name") or "" for g in groups))
+    if data.get("fieldsNote"):
+        print(data["fieldsNote"])
 
 
 def print_write(data):
@@ -257,7 +284,10 @@ def build_parser():
             "Phone or email lookup uses the local index only (never Contacts.app):\n"
             "  grok-contacts search QUERY --field phone\n"
             "  grok-contacts search QUERY --field email\n"
-            "Name is the default field. --live is a name search against Contacts.app.\n"
+            "  grok-contacts search QUERY --field nickname\n"
+            "  grok-contacts search QUERY --field relationship\n"
+            "Name is the default field. --live is a name or nickname search against Contacts.app.\n"
+            "Relationship search uses the index only.\n"
             "The index is off until one of:\n"
             "  grok-desk reindex --only contacts\n"
             "  grok-desk onboard --guided --index-contacts\n"
@@ -277,30 +307,34 @@ def build_parser():
 
     sp = sub.add_parser(
         "search",
-        help="Find by name, phone, or email in the local index. --live is name only.",
-        description="Find contacts by name, phone, or email. Phone and email use the local index only.",
+        help="Find by name, phone, email, nickname, or relationship. Phone, email, and relationship use the index.",
+        description="Find contacts by name, phone, email, nickname, or relationship. Phone, email, and relationship use the local index only.",
         epilog=(
             "examples:\n"
             "  grok-contacts search QUERY --field phone\n"
             "  grok-contacts search QUERY --field email\n"
+            "  grok-contacts search QUERY --field nickname\n"
+            "  grok-contacts search spouse --field relationship\n"
             "  grok-contacts search QUERY\n"
-            "Phone and email never call Contacts.app. --live with those fields exits\n"
-            "unsupported_field. The index is off until: grok-desk reindex --only contacts"
+            "Phone, email, and relationship never call Contacts.app. --live with those\n"
+            "fields exits unsupported_field. Nickname can use --live. sibling matches\n"
+            "brother and sister. parent matches mother and father. The index is off until:\n"
+            "grok-desk reindex --only contacts"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     sp.add_argument("query", help="At least 2 characters. Substring of the chosen field.")
     sp.add_argument(
         "--field",
-        choices=("name", "phone", "email"),
+        choices=("name", "phone", "email", "nickname", "relationship"),
         default="name",
-        help="name (default; also matches organization), phone, or email. phone and email need the contacts index",
+        help="name (default; also matches organization), phone, email, nickname, or relationship. phone, email, and relationship need the contacts index",
     )
     sp.add_argument("--limit", type=int, default=20)
-    sp.add_argument("--live", action="store_true", help="name search against Contacts.app. Not valid with --field phone or email")
+    sp.add_argument("--live", action="store_true", help="name or nickname search against Contacts.app. Not valid with --field phone, email, or relationship")
     add_json(sp)
 
-    sp = sub.add_parser("show", help="One contact, including phones and emails")
+    sp = sub.add_parser("show", help="One contact, including phones, emails, nickname, and relationships")
     sp.add_argument("query", nargs="?")
     sp.add_argument("--id")
     sp.add_argument("--live", action="store_true", help="query Contacts.app instead of the local index")
@@ -424,15 +458,26 @@ def main(argv=None):
     if args.cmd == "search":
         field = getattr(args, "field", "name") or "name"
         live = getattr(args, "live", False)
+        if field == "relationship" and live:
+            die(
+                2,
+                "unsupported_field",
+                "Contacts whose() cannot filter related names (the specifier has no relatedNames property; "
+                "phones fail the same way with -2700). Relationship search reads the local index only. "
+                "Nothing was queried.",
+                as_json,
+            )
         if not live:
             data = contactcache.search(args.query, args.limit, field)
-            if data.get("ok") or data.get("error") != "no_index":
-                if not data.get("ok") and data.get("error") == "no_index":
-                    pass
-                else:
-                    data["version"] = VERSION
-                    emit(data, as_json, print_search)
-                    return
+            err = data.get("error")
+            if err == "no_index":
+                pass
+            elif err == "needs_reindex" and field == "nickname":
+                pass
+            else:
+                data["version"] = VERSION
+                emit(data, as_json, print_search)
+                return
         if field in ("phone", "email"):
             die(
                 2,
@@ -442,8 +487,17 @@ def main(argv=None):
                 "card would load the whole book. Nothing was queried.",
                 as_json,
             )
+        if field == "relationship":
+            die(
+                2,
+                "unsupported_field",
+                "Relationship search needs the local index (grok-desk reindex --only contacts). "
+                "Contacts whose() cannot filter related names, and this CLI does not walk every card. "
+                "Nothing was queried.",
+                as_json,
+            )
         wake_contacts()
-        data = call_jxa({"op": "search", "query": args.query, "limit": args.limit}, LIVE_TIMEOUT, as_json)
+        data = call_jxa({"op": "search", "query": args.query, "limit": args.limit, "field": field}, LIVE_TIMEOUT, as_json)
         data["source"] = "live"
         data["version"] = VERSION
         emit(data, as_json, print_search)

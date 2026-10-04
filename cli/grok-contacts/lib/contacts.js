@@ -111,10 +111,20 @@ function matchSpec(app, q) {
 
 function search(app, payload) {
   var q = String(payload.query || "").trim();
+  var field = String(payload.field || "name");
   if (q.length < 2) {
     return { ok: false, error: "missing_query", message: "Search needs at least 2 characters." };
   }
-  var spec = matchSpec(app, q);
+  if (field === "relationship") {
+    return {
+      ok: false,
+      error: "unsupported_field",
+      message: "Contacts whose() cannot filter related names. Relationship search uses the local index. Nothing was queried."
+    };
+  }
+  var spec = field === "nickname"
+    ? app.people.whose({ nickname: { _contains: q } })
+    : matchSpec(app, q);
   var n = spec.length;
   if (n > 200) {
     return {
@@ -149,6 +159,7 @@ function search(app, payload) {
   return {
     ok: true,
     query: q,
+    field: field,
     count: n,
     truncated: n > limit,
     matches: rows.slice(0, limit)
@@ -198,9 +209,28 @@ function show(app, payload) {
     emails: labeled(p.emails),
     urls: labeled(p.urls),
     addresses: addressList(p),
-    groups: groupsFor(app, p.id())
+    groups: groupsFor(app, p.id()),
+    relationships: relatedList(p)
   };
   return { ok: true, contact: card };
+}
+
+function relatedList(person) {
+  var items = [];
+  try { items = asList(person.relatedNames()); }
+  catch (e) { return []; }
+  var out = [];
+  for (var i = 0; i < items.length; i++) {
+    var label = null;
+    var name = null;
+    var id = null;
+    try { id = items[i].id(); } catch (e1) { id = null; }
+    try { label = labelOut(empty(items[i].label())); } catch (e2) { label = null; }
+    try { name = empty(items[i].value()); } catch (e3) { name = null; }
+    if (!label && !name) continue;
+    out.push({ id: id, label: label, name: name });
+  }
+  return out;
 }
 
 function createPerson(app, payload) {
@@ -445,7 +475,10 @@ var LABEL_OUT = {
   "_$!<WorkFAX>!$_": "work fax",
   "_$!<Pager>!$_": "pager",
   "_$!<Parent>!$_": "parent",
+  "_$!<Mother>!$_": "mother",
+  "_$!<Father>!$_": "father",
   "_$!<Brother>!$_": "brother",
+  "_$!<Sibling>!$_": "sibling",
   "_$!<Sister>!$_": "sister",
   "_$!<Child>!$_": "child",
   "_$!<Friend>!$_": "friend",

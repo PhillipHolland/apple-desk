@@ -9,6 +9,8 @@ grok-contacts search "Ada"
 grok-contacts search "Ada" --live
 grok-contacts search QUERY --field phone
 grok-contacts search QUERY --field email
+grok-contacts search QUERY --field nickname
+grok-contacts search spouse --field relationship
 grok-contacts show --id CONTACTID
 grok-contacts groups
 grok-contacts gaps
@@ -22,6 +24,6 @@ grok-contacts create-group "Engineers"
 grok-contacts delete-group "Engineers" --force
 ```
 
-Add `--json` on any command. `doctor` without `--live` reports the index people count and does not open Contacts.app. `doctor --live` checks the app version and group count/names only. It does not walk every person or open the Me card. `search` and `show` are cache-first. `--field phone` and `--field email` search the index only and never call Contacts. Do not pass `--live` with those fields. The index stays off until `grok-desk reindex --only contacts` or `grok-desk onboard --guided --index-contacts`. See [docs/CONTACTS_INDEX.md](../../docs/CONTACTS_INDEX.md). `groups` (and `list`) are still live, because the index stores people, not groups. Deletes need `--force`. Deleting a group with more than 30 members also needs `--allow-large`. Deleting a group does not delete the people in it.
+Add `--json` on any command. `doctor` without `--live` reports the index people count and does not open Contacts.app. `doctor --live` checks the app version and group count/names only. It does not walk every person or open the Me card. `search` and `show` are cache-first. `--field phone` and `--field email` search the index only and never call Contacts. Do not pass `--live` with those fields. Nickname search matches the nickname field. Relationship search matches a related-name label (parent, spouse, sibling, friend, manager, and the same kind of label Contacts already stores). `sibling` also matches brother and sister. `parent` also matches mother and father. Relationship search never calls Contacts.app, because `whose()` cannot see related names. Nickname search can pass `--live`. `show` includes nickname and relationships when that read already has them. An empty value stays empty. An older index omits the two fields until reindex. The index stays off until `grok-desk reindex --only contacts` or `grok-desk onboard --guided --index-contacts`. See [docs/CONTACTS_INDEX.md](../../docs/CONTACTS_INDEX.md). `groups` (and `list`) are still live, because the index stores people, not groups. Deletes need `--force`. Deleting a group with more than 30 members also needs `--allow-large`. Deleting a group does not delete the people in it.
 
 The first live Contacts command needs Automation permission for the calling app to control Contacts (System Settings → Privacy & Security → Automation). Error -1743 means that grant is missing. A dialog that says “Grok Bot” wants access to control “Contacts” is that prompt: click Allow. A timeout is not retried.
