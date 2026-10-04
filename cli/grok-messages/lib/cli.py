@@ -12,7 +12,7 @@ from pathlib import Path
 
 import db
 
-VERSION = "0.2.10"
+VERSION = "0.2.11"
 LIB = Path(__file__).resolve().parent / "messages.js"
 ALLOWLIST = Path.home() / ".config" / "grok-messages" / "allowlist"
 MAX_TEXT = 4000
@@ -27,6 +27,7 @@ GAPS = [
     "Reactions are labeled (love, like, dislike, laugh, emphasize, question, emoji) from the row itself. The message that was reacted to is not pulled in.",
     "An optional allowlist file (~/.config/grok-messages/allowlist) restricts send targets if it exists. One handle or chat guid per line. If the file exists and has no targets, every send is refused. If the file does not exist, --force is the only gate.",
     "There is no cloud iMessage API here. This does not talk to iCloud.com.",
+    "imsg history and imsg watch are read-only wraps of the vendored imsg binary ($GROK_MESSAGES_IMSG when executable, else the source checkout release binary). There is no imsg attachments subcommand. Attachment paths are original_path fields on those JSON rows. Default is a dry-run: it prints the argv and does not run imsg, so it prints no message body and no path. --force runs imsg with --json and still omits message text. --reveal-path is the only path print, and it does not open the file. Attachment conversion is never requested, because that writes a cache. send, react, and mark-read do not use this wrap. It does not call imsg send, imsg tapback, imsg launch, or IMCore. imsg search stays on the in-house search command.",
     "unread counts incoming rows with is_read = 0. It does not mark chats read, does not return message text, and does not call Messages.app. Names come from the chat display name, then the local contacts cache when that index exists. Marking read is the separate mark-read command.",
 ]
 
@@ -978,6 +979,252 @@ def cmd_react(args):
     print(f"reacted {reaction} in chat {chat['rowid']}")
 
 
+
+def _read_only_target(args, as_json, idle):
+    to = (getattr(args, "to", None) or "").strip()
+    chat_guid = (getattr(args, "chat_guid", None) or "").strip()
+    if to and chat_guid:
+        die(2, "both_targets", "Pass either --to or --chat-guid, not both. " + idle, as_json)
+    target = chat_guid or to
+    if not target:
+        die(2, "missing_target", "Pass --to or --chat-guid. " + idle, as_json)
+    return target
+
+
+def _history_argv(rowid: int, limit: int) -> list[str]:
+    """Read-only imsg history. JSON so this process can drop bodies and paths.
+
+    Never passes a cache-conversion flag, --db, send, react, or tapback.
+    """
+    binary = _imsg_path() or VENDOR_IMSG
+    return [binary, "history", "--chat-id", str(int(rowid)), "--limit", str(int(limit)), "--json"]
+
+
+def _watch_argv(rowid: int) -> list[str]:
+    """Read-only imsg watch for one chat. No bridge events and no cache conversion."""
+    binary = _imsg_path() or VENDOR_IMSG
+    return [binary, "watch", "--chat-id", str(int(rowid)), "--json"]
+
+
+def _basename_only(value):
+    if not isinstance(value, str) or not value:
+        return None
+    if "/" in value:
+        tail = value.rsplit("/", 1)[-1]
+        return tail or None
+    return value
+
+
+def _redact_imsg_message(obj: dict, reveal_path: bool) -> dict:
+    """Drop message text and absolute paths. Paths return only with reveal_path."""
+    text = obj.get("text")
+    text_s = text if isinstance(text, str) else ""
+    raw_atts = obj.get("attachments") if isinstance(obj.get("attachments"), list) else []
+    attachments = []
+    for att in raw_atts:
+        if not isinstance(att, dict):
+            continue
+        name = _basename_only(att.get("transfer_name")) or _basename_only(att.get("filename"))
+        item = {
+            "name": name,
+            "mime": att.get("mime_type") or None,
+            "bytes": att.get("total_bytes"),
+            "sticker": bool(att.get("is_sticker")),
+            "missing": bool(att.get("missing")),
+        }
+        if reveal_path:
+            path = att.get("original_path")
+            item["path"] = path if isinstance(path, str) and path else None
+        attachments.append(item)
+    return {
+        "id": obj.get("id"),
+        "chatId": obj.get("chat_id"),
+        "createdAt": obj.get("created_at"),
+        "fromMe": bool(obj.get("is_from_me")),
+        "sender": obj.get("sender") if isinstance(obj.get("sender"), str) else None,
+        "hasText": bool(text_s.strip()),
+        "textLength": len(text_s),
+        "reaction": bool(obj.get("is_reaction")),
+        "attachmentCount": len(attachments),
+        "attachments": attachments,
+    }
+
+
+def _parse_imsg_json_lines(stdout: str) -> list[dict]:
+    rows = []
+    for line in (stdout or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict):
+            rows.append(obj)
+    return rows
+
+
+def _run_imsg_readonly(argv: list[str]) -> tuple[int, str, str]:
+    proc = subprocess.run(argv, capture_output=True, text=True)
+    return proc.returncode, proc.stdout or "", proc.stderr or ""
+
+
+def _stream_imsg(argv: list[str]):
+    return subprocess.Popen(
+        argv,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+
+def _close_stream(proc) -> None:
+    if proc is None:
+        return
+    if proc.poll() is None:
+        proc.terminate()
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=2)
+
+
+def _print_read_row(row: dict, reveal: bool) -> None:
+    who = "me" if row.get("fromMe") else (row.get("sender") or "?")
+    print(
+        f"{row.get('createdAt') or '-':25}  {who}  "
+        f"chars {row.get('textLength')}  attachments {row.get('attachmentCount')}"
+    )
+    if reveal:
+        for att in row.get("attachments") or []:
+            print(f"  {att.get('path') if att.get('path') else PATH_UNAVAILABLE}")
+
+
+def _load_chat_row(args, as_json, idle):
+    target = _read_only_target(args, as_json, idle)
+    con = open_db(as_json)
+    try:
+        chat = _resolve(con, target, getattr(args, "service", None), as_json)
+    finally:
+        con.close()
+    return chat
+
+
+def _dry_read(kind: str, argv: list[str], chat: dict, reveal: bool, as_json, extra: dict | None = None):
+    missing = _imsg_path() is None
+    data = {
+        "ok": True,
+        "dryRun": True,
+        "readOnly": True,
+        "executed": False,
+        "kind": kind,
+        "chatRowid": chat["rowid"],
+        "command": shlex.join(argv),
+        "imsgMissing": missing,
+        "revealPath": reveal,
+        "bodies": False,
+    }
+    if extra:
+        data.update(extra)
+    if reveal:
+        data["warning"] = PATH_WARNING
+
+    def show(d):
+        print(f"dry-run: imsg {d['kind']}  chat rowid {d['chatRowid']}")
+        print(d["command"])
+        if d.get("imsgMissing"):
+            print("missing: imsg binary is not executable")
+        if d.get("revealPath"):
+            print(d["warning"])
+            print("paths are not read on a dry-run")
+        print("nothing executed")
+        print("message bodies are not printed")
+
+    emit(data, as_json, show)
+
+
+def _emit_read_rows(kind: str, rows: list[dict], reveal: bool, as_json, chat_rowid: int):
+    data = {
+        "ok": True,
+        "dryRun": False,
+        "readOnly": True,
+        "executed": True,
+        "kind": kind,
+        "chatRowid": chat_rowid,
+        "count": len(rows),
+        "bodies": False,
+        "messages": rows,
+    }
+    if reveal:
+        data["revealPath"] = True
+        data["warning"] = PATH_WARNING
+
+    def show(d):
+        print(f"{d['kind']}: {d['count']} messages (bodies hidden)")
+        if d.get("revealPath"):
+            print(d["warning"])
+        for row in d["messages"]:
+            _print_read_row(row, bool(d.get("revealPath")))
+
+    emit(data, as_json, show)
+
+
+def cmd_history(args):
+    """Wrap imsg history. Dry-run unless --force. Never prints message text."""
+    as_json = args.json
+    reveal = bool(getattr(args, "reveal_path", False))
+    idle = "Nothing was read from imsg."
+    if not 1 <= args.limit <= 40:
+        die(2, "bad_request", "--limit must be 1 through 40.", as_json)
+    chat = _load_chat_row(args, as_json, idle)
+    argv = _history_argv(chat["rowid"], args.limit)
+    if not args.force:
+        _dry_read("history", argv, chat, reveal, as_json, {"limit": args.limit})
+        return
+    if _imsg_path() is None:
+        die(2, "missing_imsg", f"imsg history binary is missing ({argv[0]}). Nothing was read.", as_json)
+    code, stdout, _stderr = _run_imsg_readonly(argv)
+    if code != 0:
+        die(code or 1, "imsg_failed", f"imsg history exited {code}. Nothing was opened.", as_json)
+    rows = [_redact_imsg_message(obj, reveal) for obj in _parse_imsg_json_lines(stdout)]
+    _emit_read_rows("history", rows, reveal, as_json, chat["rowid"])
+
+
+def cmd_watch(args):
+    """Wrap imsg watch. Opt-in: dry-run unless --force. Does not start a watch otherwise."""
+    as_json = args.json
+    reveal = bool(getattr(args, "reveal_path", False))
+    idle = "Nothing was watched. imsg watch was not started."
+    chat = _load_chat_row(args, as_json, idle)
+    argv = _watch_argv(chat["rowid"])
+    if not args.force:
+        _dry_read("watch", argv, chat, reveal, as_json)
+        return
+    if _imsg_path() is None:
+        die(2, "missing_imsg", f"imsg watch binary is missing ({argv[0]}). Nothing was watched.", as_json)
+    proc = _stream_imsg(argv)
+    rows = []
+    try:
+        stream = proc.stdout
+        if stream is None:
+            die(1, "imsg_failed", "imsg watch produced no stream. Nothing was opened.", as_json)
+        for line in stream:
+            line = (line or "").strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(obj, dict):
+                rows.append(_redact_imsg_message(obj, reveal))
+    finally:
+        _close_stream(proc)
+    _emit_read_rows("watch", rows, reveal, as_json, chat["rowid"])
+
+
 def cmd_gaps(args):
     as_json = getattr(args, "json", False)
     data = {"ok": True, "tool": "grok-messages", "version": VERSION, "gaps": GAPS}
@@ -1129,6 +1376,57 @@ def build_parser():
     react.add_argument("--force", action="store_true", help="Run imsg react once. The wrap does not pre-check the lock or activate Messages. Vendor imsg may still require Messages in front. Without this, dry-run only.")
     react.set_defaults(func=cmd_react)
 
+
+    history = sub.add_parser(
+        "history",
+        help="Read-only imsg history. Dry-run unless --force. No message text.",
+        description=(
+            "Wrap imsg history for one chat. Default is a dry-run: it prints the argv and does not run imsg. "
+            "--force runs imsg history --json once and still omits message text. "
+            "There is no imsg attachments subcommand. Attachment paths are original_path on that JSON, "
+            "and they print only with --reveal-path, which does not open the file. "
+            "This does not request attachment conversion, and it does not call imsg send, imsg react, imsg tapback, or imsg launch. "
+            "send, react, and mark-read are unchanged."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    add_json(history)
+    history.add_argument("--to")
+    history.add_argument("--chat-guid")
+    history.add_argument("--service", choices=("iMessage", "SMS", "RCS"))
+    history.add_argument("--limit", type=int, default=15)
+    history.add_argument("--force", action="store_true", help="Run imsg history once. Without this, dry-run only. Bodies stay hidden.")
+    history.add_argument(
+        "--reveal-path",
+        action="store_true",
+        help="With --force, print original_path from imsg JSON. Warns that the file is private. Does not open it.",
+    )
+    history.set_defaults(func=cmd_history)
+
+    watch = sub.add_parser(
+        "watch",
+        help="Opt-in imsg watch. Dry-run unless --force. Does not start by itself.",
+        description=(
+            "Wrap imsg watch for one chat. Without --force it prints the argv and does not start imsg. "
+            "--force streams imsg watch --json until the process ends, and still omits message text. "
+            "Attachment paths need --reveal-path and are not opened. "
+            "Bridge events and attachment conversion are not requested. "
+            "This does not call imsg send, imsg react, imsg tapback, or imsg launch."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    add_json(watch)
+    watch.add_argument("--to")
+    watch.add_argument("--chat-guid")
+    watch.add_argument("--service", choices=("iMessage", "SMS", "RCS"))
+    watch.add_argument("--force", action="store_true", help="Start imsg watch. Without this, nothing is started.")
+    watch.add_argument(
+        "--reveal-path",
+        action="store_true",
+        help="With --force, print original_path from imsg JSON. Warns that the file is private. Does not open it.",
+    )
+    watch.set_defaults(func=cmd_watch)
+
     gaps = sub.add_parser("gaps")
     add_json(gaps)
     gaps.set_defaults(func=cmd_gaps)
@@ -1142,7 +1440,7 @@ def main(argv=None):
     if isinstance(limit, int):
         if limit < 1:
             die(2, "bad_request", "--limit must be at least 1.", getattr(args, "json", False))
-        cap = 40 if args.cmd in ("recent", "search") else (50 if args.cmd == "unread" else 200)
+        cap = 40 if args.cmd in ("recent", "search", "history") else (50 if args.cmd == "unread" else 200)
         if limit > cap:
             die(2, "bad_request", f"--limit {limit} is above the cap ({cap}).", getattr(args, "json", False))
     try:

@@ -166,7 +166,7 @@ def main():
             failures.append(name)
             print("FAIL", name)
 
-    check("version is 0.2.10", cli.VERSION == "0.2.10")
+    check("version is 0.2.11", cli.VERSION == "0.2.11")
     check("email handle", db.is_new_chat_handle(HANDLE))
     check("phone handle", db.is_new_chat_handle(PHONE))
     check("display name is not a handle", not db.is_new_chat_handle(GROUP_NAME))

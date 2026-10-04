@@ -41,3 +41,12 @@ Do not copy `chat.db` off this Mac.
 grok-messages attachments --chat-guid "fixture-chat"
 grok-messages attachments --chat-guid "fixture-chat" --reveal-path
 ```
+
+`history` wraps `imsg history`. `watch` wraps `imsg watch`. Both are a dry-run unless `--force`. A dry-run prints the argv and does not run imsg, so it does not print a message body or a path. `--force` still omits message text. imsg has no attachments subcommand. `original_path` on that JSON is printed only with `--reveal-path`, which warns and does not open the file. Attachment conversion is not requested. `send`, `react`, and `mark-read` do not use this wrap.
+
+```bash
+grok-messages history --chat-guid "fixture-chat"
+grok-messages history --chat-guid "fixture-chat" --force
+grok-messages watch --chat-guid "fixture-chat"
+```
+

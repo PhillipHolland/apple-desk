@@ -9,7 +9,7 @@ Messages `react` is the first peer wrap (`imsg react`, 1:1, dry-run unless `--fo
 | CLI | Commands seen |
 | --- | --- |
 | `grok-desk` 0.1.7 | `doctor` `onboard` `reindex` `status` `search` `signature` `gaps` |
-| `grok-messages` 0.2.10 | `doctor` `chats` `list` `recent` `search` `send` `attachments` `unread` `mark-read` `react` `gaps` |
+| `grok-messages` 0.2.11 | `doctor` `chats` `list` `recent` `search` `send` `attachments` `unread` `mark-read` `react` `history` `watch` `gaps` |
 | `grok-calendar` 0.1.5 | `doctor` `calendars` `name-at` `list` `search` `show` `create` `update` `delete` `gaps` |
 | `grok-reminders` 0.1.4 | `doctor` `lists` `today` `upcoming` `search` `show` `add` `done` `delete` `gaps` |
 | `grok-contacts` 0.1.3 | `doctor` `search` `show` `groups` `list` `create` `update` `delete` `create-group` `delete-group` `add-to-group` `remove-from-group` `gaps` |
@@ -44,7 +44,7 @@ Wrap the `imsg` binary that implements `react` (`$GROK_MESSAGES_IMSG` when execu
 
 | Peer feature | Now | Next |
 | --- | --- | --- |
-| imsg `chats` `history` `search` `watch` attachment paths | Reimplemented: `chats` `list` `recent` `search` `unread`; `attachments` is metadata only | Wrap `imsg` for those reads. Keep our send gate. |
+| imsg `chats` `history` `search` `watch` attachment paths | `history` and `watch` wrap imsg (dry-run unless `--force`; bodies omitted; paths behind `--reveal-path`). No imsg attachments subcommand. `chats` `list` `recent` `search` `unread` and `attachments` stay in-house | Do not route send or react through this wrap. imsg search stays in-house. |
 | imsg `send` (text and file) | Reimplemented: plain-text `send` only | Do not wrap file send until the same draft+yes gate exists. Reactions are Tapbacks v1: shipped 1:1 `react`, dry-run unless `--force`. |
 | imsg RPC, scheduled, chat background, IMCore/SIP | Not shipped | Deferred. IMCore/SIP is not a product path. Tapbacks do not call these. |
 | apple-tools `apple status` plus notes, mail, messages, contacts, reminders, calendar reads (MIT) | Reimplemented as `grok-desk status` and the JXA/cache CLIs | Wrap the MIT binaries behind `grok-*`. Their SQLite reads are the fast path. |
@@ -62,7 +62,7 @@ Passwords, HomeKit, Photos, Freeform, and Safari. `grok-safari` 0.1.2 exists (`d
 ## Gaps
 
 1. No peer binary is wrapped. Calendar, reminders, contacts, mail, and notes are still in-house.
-2. Wrap `imsg` for history, watch, search, and attachment paths. Keep send gated.
+2. `history` and `watch` wrap imsg. Search stays in-house. Attachment paths from imsg stay behind `--reveal-path`. Keep send gated.
 3. Wrap apple-tools (MIT) for notes, mail, messages, contacts, phone, and `apple status`.
 4. Wrap apple-pim EventKit (`calendar-cli`, `reminder-cli`) instead of growing `grok-eventkit`.
 5. Pick one of apple-pim or openclaw-apple-calendar for event CRUD. Do not ship three backends.

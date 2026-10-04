@@ -26,7 +26,7 @@ grok-desk onboard --guided
 | `grok-reminders` | Reminders 0.1.4 (in-house; dry-run add; names-only doctor) |
 | `grok-notes` | Notes.app + search cache (0.2.2, `import-md` / `export-md`) |
 | `grok-contacts` | Contacts.app 0.1.3 (cache-first search/show; nickname and relationship filters; `--live` for Contacts.app) |
-| `grok-messages` | Messages 0.2.10 (shipped mark-read, history, unread, gated send, 1:1 react; attachment path is opt-in; missing 1:1 starts from the first message) |
+| `grok-messages` | Messages 0.2.11 (shipped mark-read, unread, gated send, 1:1 react; imsg history and watch are dry-run unless --force and hide bodies; attachment path is opt-in) |
 | `grok-calendar` | Calendar.app 0.1.5 (count-only doctor; cache-first list/search) |
 | `grok-shortcuts` | Shortcuts 0.1.2 list/run/create (`run` and `create` need `--force`) |
 | `grok-mail` | Mail.app 0.1.2 (blocked on Automation Allow; prefer Gmail connector) |
