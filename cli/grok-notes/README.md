@@ -78,4 +78,6 @@ After `import-md --force`, run `reindex` before you expect `search` or `tags` to
 
 Folder and hashtag recipes (Projects, Areas, Resources, Archives, `#project/name`, `#area/name`, `#waiting`, `#ref`) are in [docs/NOTES_PARA.md](../../docs/NOTES_PARA.md).
 
+Smart Folders are not scriptable. Coaching, and the commands that stand in for one, are in [docs/NOTES_SMART_FOLDERS.md](../../docs/NOTES_SMART_FOLDERS.md).
+
 The first successful Notes command needs Automation permission for the calling app to control Notes (System Settings → Privacy & Security → Automation). Error -1743 means that grant is missing.
