@@ -1002,7 +1002,7 @@ def build_parser():
             "The binary is $GROK_MESSAGES_IMSG when that path is executable, otherwise the vendored imsg 0.15.10. "
             "PATH and Homebrew imsg are not used. A missing binary still prints the command on dry-run; "
             "--force exits missing_imsg. No AppleScript fallback. "
-            "This does not call imsg tapback, imsg launch, or IMCore, and it does not write chat.db."
+            "This does not call imsg tapback, imsg launch, or IMCore, and it does not write chat.db. Locked-screen tapbacks stay parked: imsg tapback needs SIP disabled and imsg launch, and this wrap will not do either."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
