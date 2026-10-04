@@ -16,7 +16,7 @@ from pathlib import Path
 
 import db
 
-VERSION = "0.2.13"
+VERSION = "0.2.14"
 LIB = Path(__file__).resolve().parent / "messages.js"
 ALLOWLIST = Path.home() / ".config" / "grok-messages" / "allowlist"
 MAX_TEXT = 4000
@@ -25,8 +25,8 @@ CONFIRM_FILENAME = "send-confirm.json"
 
 GAPS = [
     "Messages 26 scripting can list chats (id, name, participants) and send text to an existing chat. It cannot read message history. History comes from ~/Library/Messages/chat.db and needs Full Disk Access for the process that runs this CLI (Grok Bot Helper when an agent runs it).",
-    "Send to an existing chat uses the Messages scripting list. A missing 1:1 is the exception: when --to is a phone or email handle and the text is non-empty, send --force --confirm TOKEN sends one message, and that first message is what creates the chat. --force alone does not send. The scripting dictionary cannot make an empty chat. A send without --force is a dry-run: it prints a confirm token and does not send or create a chat. A display name with no 1:1 stays not_found. An existing 1:1 is reused. A group name or group guid is still refused. Unknown-sender and junk chats are often absent, so history can show them while a --chat-guid send returns not_in_messages_ui. Nothing is sent in that case.",
-    "send --to is a person only (phone, email, or a 1:1 chat). It never targets a group, even when that handle is a member of one. The send uses Messages' participant object (1:1). If the handle exists only in a group, send does not message that group. A phone or email handle plus text can start a separate 1:1; the group itself still needs --chat-guid. A group name or group guid is refused. This CLI does not create groups.",
+    "Send to an existing chat is one no-reply Apple event to that chat id, then a chat.db check that the outgoing text was recorded. It does not walk the scripting list and it does not wait on the send reply. A missing 1:1 is the exception: when --to is a phone or email handle and the text is non-empty, send --force --confirm TOKEN sends one message, and that first message is what creates the chat. --force alone does not send. The scripting dictionary cannot make an empty chat. A send without --force is a dry-run: it prints a confirm token and does not send or create a chat. A display name with no 1:1 stays not_found. An existing 1:1 is reused. A group name or group guid is still refused. Unknown-sender and junk chats are often absent from the scripting list; an existing-chat send still addresses the guid from chat.db. Nothing is sent again when the receipt is missing.",
+    "send --to is a person only (phone, email, or a 1:1 chat). It never targets a group, even when that handle is a member of one. An existing 1:1 is sent to that chat id. If the handle exists only in a group, send does not message that group. A phone or email handle plus text can start a separate 1:1; the group itself still needs --chat-guid. A group name or group guid is refused. This CLI does not create groups.",
     "attachments lists metadata for one chat (name, mime, bytes, sticker, date). Default output has no absolute path. --reveal-path prints the local absolute path already stored on the row and warns that it is a private file. It does not open, copy, upload, or search the disk. A row with no stored path says so and exits cleanly. Send still cannot attach a file. react is a 1:1 wrap of imsg react (love, like, dislike, laugh, emphasis, question; emphasize means emphasis). It is a dry-run unless --force, has no --chat-guid, and refuses groups. --force does not pre-check the screen lock and does not activate Messages. It runs imsg react once. Vendor imsg activates Messages and exits -2700 if it is not in front. It does not call imsg tapback, imsg launch, or IMCore, and it has no AppleScript fallback. Stickers-as-send, message effects, edits, unsends, and replies are still absent. Send is plain text only, capped at 4000 characters.",
     "No pin, mute, hide alerts, or Focus filter changes. mark-read does not write chat.db and does not use IMCore. With --force it makes Messages frontmost, then clicks an enabled Conversation > Mark All as Read. Activate alone is not success. It does not send.",
     "Search looks at the message text column only. Attachment-only rows and a few attributed-body-only rows have null text and will not match. Snippets are capped.",
@@ -92,13 +92,145 @@ def call_jxa(payload, timeout, as_json):
     return data
 
 
-# The --to 1:1 send path is participant-only: never activate Messages or drive menus.
-# Screen lock does not block this scripting path; -1712/exit 4 gets one unstick/relaunch and one send.
+# Missing-1:1 creation still uses this waiting JXA send. An existing chat does not:
+# resolving that chat, and Messages.send itself, are synchronous Apple events whose
+# reply can sit until the alarm while Messages stays idle. call_existing_send does
+# not walk the scripting list and does not wait for that reply.
 def call_send_jxa(payload, timeout, as_json):
-    """Send through Messages scripting only; never activate or drive UI."""
+    """Create a missing 1:1 through Messages scripting. Never activate or drive UI."""
     if payload.get("op") not in {"send_participant", "send_chat"}:
         die(2, "bad_request", "Internal send route is not a supported Messages send operation. Nothing was sent.", as_json)
     return call_jxa(payload, timeout, as_json)
+
+
+# One event. The chat id is an object specifier inside the send, not a prior get.
+# ignoring application responses is kAENoReply, so a reply that never comes cannot
+# hold the caller. Acceptance is the new outgoing row. There is no second send.
+EXISTING_CHAT_SEND_SCRIPT = """on run argv
+  set chatId to item 1 of argv
+  set theMessage to item 2 of argv
+  ignoring application responses
+    tell application "Messages"
+      send theMessage to chat id chatId
+    end tell
+  end ignoring
+  return "dispatched"
+end run
+"""
+SEND_EVENT_TIMEOUT = 8
+RECEIPT_WAIT_SECONDS = 5.0
+
+
+def _run_osascript(script, argv, timeout):
+    return subprocess.run(
+        [
+            "perl", "-e", "alarm shift @ARGV; exec @ARGV",
+            str(int(timeout)),
+            "osascript", "-l", "AppleScript", "-",
+            *list(argv),
+        ],
+        input=script,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _max_message_rowid(con) -> int:
+    row = con.execute("select coalesce(max(ROWID), 0) from message").fetchone()
+    return int(row[0] or 0)
+
+
+def outgoing_receipt(con, chat_rowid, text, after_rowid):
+    """First outgoing copy of this text in this chat after the watermark. Read-only."""
+    return con.execute(
+        """
+        select m.ROWID as rowid, m.error as error, m.is_sent as is_sent
+        from message m
+        join chat_message_join j on j.message_id = m.ROWID
+        where j.chat_id = ?
+          and m.is_from_me = 1
+          and m.ROWID > ?
+          and m.text = ?
+          and ifnull(m.associated_message_type, 0) = 0
+        order by m.ROWID asc
+        limit 1
+        """,
+        (int(chat_rowid), int(after_rowid), text),
+    ).fetchone()
+
+
+def _wait_outgoing_receipt(chat_rowid, text, after_rowid, as_json):
+    deadline = time.monotonic() + RECEIPT_WAIT_SECONDS
+    while True:
+        try:
+            con = db.connect()
+        except db.HistoryUnavailable as exc:
+            die(5, "needs_full_disk_access", exc.message, as_json)
+        try:
+            row = outgoing_receipt(con, chat_rowid, text, after_rowid)
+        finally:
+            con.close()
+        if row is not None:
+            return row
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(0.2)
+
+
+def call_existing_send(chat, text, as_json):
+    """Queue one send to an existing chat id and return from the chat.db receipt."""
+    guid = str(chat.get("guid") or "")
+    rowid = chat.get("rowid")
+    if not guid or not rowid:
+        return {
+            "ok": False,
+            "error": "bad_request",
+            "sent": False,
+            "message": "The existing chat has no guid. Nothing was sent.",
+        }
+    try:
+        con = db.connect()
+    except db.HistoryUnavailable as exc:
+        die(5, "needs_full_disk_access", exc.message, as_json)
+    try:
+        watermark = _max_message_rowid(con)
+    finally:
+        con.close()
+
+    proc = _run_osascript(EXISTING_CHAT_SEND_SCRIPT, [guid, text], SEND_EVENT_TIMEOUT)
+    blob = ((proc.stderr or "") + "\n" + (proc.stdout or "")).strip()
+    if "-1743" in blob or "Not authorized to send Apple events" in blob:
+        die(3, "automation_denied", blob, as_json)
+
+    row = _wait_outgoing_receipt(rowid, text, watermark, as_json)
+    if row is not None and int(row["error"] or 0) == 0:
+        return {
+            "ok": True,
+            "sent": True,
+            "confirmedBy": "chat.db",
+            "messageRowId": int(row["rowid"]),
+            "group": db.chat_is_group(chat),
+        }
+    if row is not None:
+        code = int(row["error"] or 0)
+        return {
+            "ok": False,
+            "error": "messages_error",
+            "sent": False,
+            "message": (
+                f"Messages recorded the text and marked it failed (error {code}). "
+                "It was not sent again. Do not retry in a loop."
+            ),
+        }
+    return {
+        "ok": False,
+        "error": "send_unconfirmed",
+        "sent": False,
+        "message": (
+            "Messages did not record that outgoing text in the chat. "
+            "The send was not repeated. Do not retry in a loop."
+        ),
+    }
 
 
 def emit(data, as_json, text_fn):
@@ -695,16 +827,8 @@ def cmd_send(args):
             "text": text,
             "createIfMissing": True,
         }, 45, as_json)
-    elif route == "participant":
-        result = call_send_jxa({
-            "op": "send_participant",
-            "handle": handle,
-            "service": chat.get("service"),
-            "directChatId": chat["guid"],
-            "text": text,
-        }, 45, as_json)
     else:
-        result = call_send_jxa({"op": "send_chat", "chatId": chat["guid"], "text": text}, 45, as_json)
+        result = call_existing_send(chat, text, as_json)
     if not result.get("ok"):
         emit(result, as_json, lambda d: None)
     data = {
@@ -718,6 +842,8 @@ def cmd_send(args):
     }
     if route in {"participant", "new_participant"}:
         data["handle"] = result.get("handle") or handle
+    if result.get("confirmedBy"):
+        data["confirmedBy"] = result["confirmedBy"]
     if route == "new_participant":
         data["created"] = bool(result.get("created"))
         data["group"] = False
@@ -1405,7 +1531,7 @@ def build_parser():
         "send",
         help="Send plain text. --to is 1:1 only. Groups need --chat-guid.",
         description=(
-            "Send plain text through Messages.app's non-UI scripting path. It never activates Messages, clicks menus, waits for a frontmost window, or uses mark-read's screen_locked guard. The --to 1:1 path is participant-only; screen lock does not block send. On AppleEvent -1712 / exit 4, quit and relaunch Messages once, make one send attempt, then stop. "
+            "Send plain text through Messages.app's non-UI scripting path. It never activates Messages, clicks menus, waits for a frontmost window, or uses mark-read's screen_locked guard. An existing chat is one no-reply send to that chat id, then a chat.db check for the outgoing text. It does not walk the scripting list, quit Messages, or relaunch it. A missing receipt is not retried. "
             "Send without --force is a dry-run and prints a confirm token. --force alone does not send. "
             "The only send is --force --confirm TOKEN. The token matches the recipient and the exact text and expires in 10 minutes. "
             "--dry-run never sends and never creates a chat, even with --force. "
@@ -1413,8 +1539,8 @@ def build_parser():
             "The scripting dictionary cannot make an empty chat, so the first message is the creation, and only --force --confirm applies it. "
             "An existing 1:1 is reused. A display name with no 1:1 is not_found. A group name or group guid is refused. "
             "--to is a person (phone, email, or the name of an existing 1:1 chat) and must never "
-            "select a group, even when that handle is a member of one. The send goes to a Messages "
-            "participant (one-to-one), not to a chat object that might be a group. "
+            "select a group, even when that handle is a member of one. An existing 1:1 is addressed "
+            "by the guid already resolved for that person, not by walking every participant. "
             "If the person only appears in a group, that group is not the target. A phone or email handle plus text can start a separate 1:1, and only --force --confirm sends it. "
             "A group name is refused. To message a group on purpose, pass --chat-guid with that exact guid. "
             "Do not pass both --to and --chat-guid. "

@@ -121,7 +121,7 @@ def main():
             failures.append(name)
             print("FAIL", name)
 
-    check("version is 0.2.13", cli.VERSION == "0.2.13")
+    check("version is 0.2.14", cli.VERSION == "0.2.14")
     check("gaps name the read wrap", "imsg history and imsg watch" in " ".join(cli.GAPS))
 
     calls = []
