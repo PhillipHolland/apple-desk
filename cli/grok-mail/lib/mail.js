@@ -11,6 +11,11 @@ function run(argv) {
   if (payload.op === "send" || payload.send) {
     return JSON.stringify({ ok: false, error: "unsupported", message: "grok-mail does not send mail. Prefer the Gmail connector for cloud Gmail." });
   }
+  if (payload.op === "flag" || payload.op === "move" || payload.op === "mark-read") {
+    if (payload.force !== true) {
+      return JSON.stringify({ ok: false, error: "needs_force", message: "flag, move, and mark-read refuse unless force is true. Mail was not called." });
+    }
+  }
   var Mail = Application("Mail");
   try {
     return JSON.stringify(dispatch(Mail, payload));
@@ -32,6 +37,7 @@ function dispatch(app, payload) {
   if (op === "show") return showMessage(app, payload);
   if (op === "search") return searchMessages(app, payload);
   if (op === "draft") return draftMessage(app, payload);
+  if (op === "flag" || op === "move" || op === "mark-read") return applyTriage(app, payload);
   return { ok: false, error: "bad_request", message: "Unknown op " + op };
 }
 
@@ -305,6 +311,82 @@ function draftMessage(app, payload) {
     id: safe(function () { return msg.id(); }, null),
     to: to,
     subject: subject
+  };
+}
+
+function applyTriage(app, payload) {
+  if (payload.force !== true) {
+    return { ok: false, error: "needs_force", message: "flag, move, and mark-read refuse unless force is true. Nothing was changed." };
+  }
+  var id = Number(payload.id);
+  if (!isFinite(id)) return { ok: false, error: "missing_target", message: "needs an id." };
+  var located = locateMessage(app, payload, id);
+  if (!located.ok) return withoutAccounts(located);
+  var msg = located.message;
+  var op = payload.op;
+  if (op === "flag") {
+    var state = String(payload.state || "");
+    if (state !== "flagged" && state !== "unflagged") {
+      return { ok: false, error: "bad_request", message: "flag state must be flagged or unflagged." };
+    }
+    try {
+      msg.flaggedStatus = state === "flagged";
+    } catch (e) {
+      return { ok: false, error: "mail_error", message: "Mail did not update flagged status." };
+    }
+    return { ok: true, applied: true, sent: false, dryRun: false, op: "flag", id: id, state: state };
+  }
+  if (op === "mark-read") {
+    try {
+      msg.readStatus = true;
+    } catch (e) {
+      return { ok: false, error: "mail_error", message: "Mail did not update read status." };
+    }
+    return { ok: true, applied: true, sent: false, dryRun: false, op: "mark-read", id: id };
+  }
+  if (op === "move") {
+    var destName = String(payload.to || "").trim();
+    if (!destName) return { ok: false, error: "bad_request", message: "move needs a destination mailbox." };
+    var dest = resolveMailbox(app, destName, payload.account);
+    if (!dest.ok) return withoutAccounts(dest);
+    try {
+      app.move(msg, { to: dest.mailbox });
+    } catch (e) {
+      return { ok: false, error: "mail_error", message: "Mail did not move the message." };
+    }
+    return { ok: true, applied: true, sent: false, dryRun: false, op: "move", id: id, to: destName };
+  }
+  return { ok: false, error: "bad_request", message: "Unknown op " + op };
+}
+
+function withoutAccounts(result) {
+  if (!result || !result.matches) return result;
+  var matches = [];
+  for (var i = 0; i < result.matches.length; i++) matches.push({ name: result.matches[i].name });
+  result.matches = matches;
+  return result;
+}
+
+function locateMessage(app, payload, id) {
+  var places = [];
+  if (payload.mailbox) {
+    var found = resolveMailbox(app, payload.mailbox, payload.account);
+    if (!found.ok) return found;
+    places.push(found);
+  } else {
+    places = candidateMailboxes(app);
+  }
+  var checked = 0;
+  for (var i = 0; i < places.length; i++) {
+    if (checked >= 40) break;
+    checked++;
+    var hit = messageById(places[i], id);
+    if (hit) return { ok: true, message: hit, id: id };
+  }
+  return {
+    ok: false,
+    error: "not_found",
+    message: "No message with id " + id + (payload.mailbox ? " in " + payload.mailbox : " in the mailboxes checked") + ". Pass --mailbox if it lives elsewhere. Checked " + checked + "."
   };
 }
 

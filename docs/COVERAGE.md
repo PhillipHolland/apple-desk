@@ -14,7 +14,7 @@ Messages `react` is the first peer wrap (`imsg react`, 1:1, dry-run unless `--fo
 | `grok-reminders` 0.1.4 | `doctor` `lists` `today` `upcoming` `search` `show` `add` `done` `delete` `gaps` |
 | `grok-contacts` 0.1.2 | `doctor` `search` `show` `groups` `list` `create` `update` `delete` `create-group` `delete-group` `add-to-group` `remove-from-group` `gaps` |
 | `grok-notes` 0.2.2 | `doctor` `folders` `list` `show` `search` `reindex` `status` `cache-clear` `tags` `create-note` `create-folder` `rename-folder` `delete-folder` `edit` `append` `move` `duplicate` `delete-note` `empty-trash` `attachments` `checklist` `share` `pin` `unpin` `lock` `unlock` `open` `import-md` `export-md` `gaps` |
-| `grok-mail` 0.1.2 | `doctor` `accounts` `mailboxes` `list` `show` `search` `draft` `gaps` |
+| `grok-mail` 0.1.3 | `doctor` `accounts` `mailboxes` `list` `show` `search` `draft` `flag` `move` `mark-read` `gaps` |
 | `grok-shortcuts` 0.1.2 | `doctor` `list` `create` `run` `gaps` |
 | `grok-icloud` 0.1.1 | `doctor` `ls` `tree` `find` `cat` `summary` `gaps` |
 | `grok-spotlight` 0.1.0 | `doctor` `search` `gaps` |
@@ -25,7 +25,7 @@ Messages `react` is the first peer wrap (`imsg react`, 1:1, dry-run unless `--fo
 ## Consent
 
 - Messages `send`: draft the recipient and text, then `--force`. `--to` is 1:1. Groups only with `--chat-guid` after that group was named.
-- Mail `draft` needs `--force` and does not send. Deletes and Focus `set` need `--force`.
+- Mail `draft` needs `--force` and does not send. `flag`, `move`, and `mark-read` are dry-run unless `--force` and do not send. Deletes and Focus `set` need `--force`.
 - `mark-read` is shipped. It drives Messages (activate, then Conversation > Mark All as Read, or Mark as Read for one chat). It does not write `chat.db`. No IMCore. No SIP change.
 
 ## In flight (not done)

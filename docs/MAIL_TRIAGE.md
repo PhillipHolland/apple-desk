@@ -1,6 +1,6 @@
 # Mail triage
 
-`grok-mail` in this build is read-only plus draft. It can inspect mail and create a draft. It does not send.
+`grok-mail` can inspect mail, save a draft, and change flag, mailbox, and read state. It does not send.
 
 ## Commands in this build
 
@@ -13,21 +13,24 @@ These subcommands exist:
 - `show`
 - `search`
 - `draft`
+- `flag`
+- `move`
+- `mark-read`
 - `gaps`
-
-`flag`, `move`, and `mark-read` are not subcommands in this build.
 
 There is no `send` command. There is no SMTP path.
 
-## Contract when mutating commands exist
+## Mutating commands
 
-When `flag`, `move`, and `mark-read` exist, they follow this contract:
+`flag`, `move`, and `mark-read` follow this contract:
 
 - The default is a dry-run. A dry-run does not call Mail.app.
 - `--force` is the only apply path.
 - These commands never send mail. There is no SMTP client and no `send` subcommand.
 
 A command without `--force` reports the planned change and leaves the mailbox unchanged. The same command with `--force` is the only form that applies the change.
+
+`flag --state flagged` or `flag --state unflagged` sets flagged status. `mark-read` sets read status. `move --to` moves one message into that mailbox.
 
 ## Placeholders
 
@@ -36,18 +39,17 @@ Examples use placeholders only. Do not put host names, email addresses, phone nu
 ```text
 grok-mail doctor
 grok-mail accounts
-grok-mail mailboxes <account>
-grok-mail list <account> <mailbox>
-grok-mail show <account> <message-id>
-grok-mail search <account> <query>
-grok-mail draft <account> <recipient> <subject> <body>
+grok-mail mailboxes --account <account>
+grok-mail list --account <account> --mailbox <mailbox>
+grok-mail show --account <account> --id <message-id>
+grok-mail search --account <account> <query>
+grok-mail draft --to <recipient> --subject <subject> --body <body>
 grok-mail gaps
 
-# not subcommands in this build; contract when they exist
-grok-mail flag <account> <message-id> <flag>
-grok-mail flag --force <account> <message-id> <flag>
-grok-mail move <account> <message-id> <mailbox>
-grok-mail move --force <account> <message-id> <mailbox>
-grok-mail mark-read <account> <message-id>
-grok-mail mark-read --force <account> <message-id>
+grok-mail flag --id <message-id> --state flagged --mailbox <mailbox> --account <account>
+grok-mail flag --id <message-id> --state unflagged --force
+grok-mail move --id <message-id> --to <mailbox> --mailbox <mailbox> --account <account>
+grok-mail move --id <message-id> --to <mailbox> --force
+grok-mail mark-read --id <message-id> --mailbox <mailbox> --account <account>
+grok-mail mark-read --id <message-id> --force
 ```

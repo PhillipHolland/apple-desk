@@ -8,7 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-VERSION = "0.1.2"
+VERSION = "0.1.3"
 LIB = Path(__file__).resolve().parent / "mail.js"
 TOOL = "grok-mail"
 
@@ -22,7 +22,7 @@ GAPS = [
     "search matches subject and sender in one mailbox (default INBOX). It does not search bodies, recipients, or every mailbox. A match set over 300 messages is refused instead of dumped.",
     "list returns at most 50 messages (default 20), newest-last in Mail's scripting order, reversed so the last rows come first. It does not page a whole mailbox.",
     "Mailbox names other than the unified Inbox, Drafts, Sent, Junk, Trash, and Outbox are matched inside Mail's mailbox tree. Duplicate names need --account. Nested paths use slash names when you know them.",
-    "No rules, signatures, VIP, flags beyond read/flagged on show, move, delete, junk training, or mailbox create.",
+    "flag, move, and mark-read default to a dry-run and call Mail only with --force. flag sets flagged or unflagged, move changes the mailbox, and mark-read sets read. They do not send. No rules, signatures, VIP, delete, junk training, or mailbox create.",
     "IMAP mailboxes that are not fully downloaded can make list, search, or show slow or time out. A timeout exits 4 once. Do not retry in a loop while a permission dialog is up.",
     "Account passwords, SMTP servers, and usernames are never read. accounts returns name, id, type, enabled, and email addresses only.",
 ]
@@ -202,12 +202,83 @@ def print_draft(data):
     print(data.get("message") or "dry-run")
 
 
+def print_triage(data):
+    op = data.get("op") or ""
+    bits = [f"{'dry-run ' if data.get('dryRun') else ''}{op} id {data.get('id')}".strip()]
+    if data.get("state"):
+        bits.append(f"state {data['state']}")
+    if data.get("to"):
+        bits.append(f"to {data['to']}")
+    print(" ".join(bits))
+    if data.get("dryRun"):
+        print(data.get("message") or "")
+    elif data.get("applied"):
+        print("not sent")
+
+
+_PRIVATE_KEYS = {
+    "subject", "sender", "body", "address", "addresses",
+    "from", "content", "recipients", "cc", "bcc",
+    "toRecipients", "ccRecipients", "bccRecipients",
+    "email", "emails", "replyTo",
+}
+
+
+def strip_private(value):
+    if isinstance(value, dict):
+        return {key: strip_private(item) for key, item in value.items() if key not in _PRIVATE_KEYS}
+    if isinstance(value, list):
+        return [strip_private(item) for item in value]
+    return value
+
+
+DRY_RUN_MESSAGE = "dry-run: Mail.app was not called. Pass --force to apply."
+
+
+def run_triage(args, as_json):
+    op = args.cmd
+    if args.id is None:
+        die(2, "missing_target", f"{op} needs --id. Mail was not called.", as_json)
+    extra = {}
+    if op == "flag":
+        state = args.state.strip() if isinstance(args.state, str) else ""
+        if state not in ("flagged", "unflagged"):
+            die(2, "bad_request", "flag needs --state flagged or unflagged. Mail was not called.", as_json)
+        extra["state"] = state
+    elif op == "move":
+        dest = args.to.strip() if isinstance(args.to, str) else ""
+        if not dest:
+            die(2, "bad_request", "move needs --to MAILBOX. Mail was not called.", as_json)
+        extra["to"] = dest
+    if not args.force:
+        data = {
+            "ok": True,
+            "dryRun": True,
+            "applied": False,
+            "sent": False,
+            "op": op,
+            "id": args.id,
+            "message": DRY_RUN_MESSAGE,
+        }
+        data.update(extra)
+        emit(data, as_json, print_triage)
+        return
+    payload = {"op": op, "id": args.id, "force": True}
+    if args.mailbox:
+        payload["mailbox"] = args.mailbox
+    if args.account:
+        payload["account"] = args.account
+    payload.update(extra)
+    data = strip_private(call_jxa(payload, LONG_TIMEOUT, as_json))
+    emit(data, as_json, print_triage)
+
+
 def add_json(sp):
     sp.add_argument("--json", action="store_true")
 
 
 def build_parser():
-    p = argparse.ArgumentParser(prog="grok-mail", description="Mail.app CLI (JXA). Read by default. Does not send.")
+    p = argparse.ArgumentParser(prog="grok-mail", description="Mail.app CLI (JXA). Read by default. flag, move, and mark-read are dry-run unless --force. Does not send.")
     p.add_argument("--version", action="version", version=f"grok-mail {VERSION}")
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -246,6 +317,29 @@ def build_parser():
     sp.add_argument("--body", default="")
     sp.add_argument("--force", action="store_true")
     sp.add_argument("--dry-run", action="store_true", help="Validate args only; do not call Mail.app")
+    add_json(sp)
+
+    sp = sub.add_parser("flag", help="Flag or unflag one message. Dry-run unless --force. Does not send.")
+    sp.add_argument("--id", type=int)
+    sp.add_argument("--state", help="flagged or unflagged")
+    sp.add_argument("--mailbox")
+    sp.add_argument("--account")
+    sp.add_argument("--force", action="store_true", help="Apply in Mail.app. Without this, Mail is not called.")
+    add_json(sp)
+
+    sp = sub.add_parser("move", help="Move one message to --to. Dry-run unless --force. Does not send.")
+    sp.add_argument("--id", type=int)
+    sp.add_argument("--to", help="Destination mailbox")
+    sp.add_argument("--mailbox")
+    sp.add_argument("--account")
+    sp.add_argument("--force", action="store_true", help="Apply in Mail.app. Without this, Mail is not called.")
+    add_json(sp)
+
+    sp = sub.add_parser("mark-read", help="Mark one message read. Dry-run unless --force. Does not send.")
+    sp.add_argument("--id", type=int)
+    sp.add_argument("--mailbox")
+    sp.add_argument("--account")
+    sp.add_argument("--force", action="store_true", help="Apply in Mail.app. Without this, Mail is not called.")
     add_json(sp)
 
     sp = sub.add_parser("gaps", help="What Mail.app can do that this CLI cannot")
@@ -348,6 +442,9 @@ def main(argv=None):
             "force": True,
         }, LONG_TIMEOUT, as_json)
         emit(data, as_json, print_draft)
+        return
+    if args.cmd in ("flag", "move", "mark-read"):
+        run_triage(args, as_json)
         return
     die(2, "bad_request", "Unknown command", as_json)
 
