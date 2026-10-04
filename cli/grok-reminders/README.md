@@ -26,3 +26,7 @@ grok-reminders gaps --json
 ## Recurrence
 
 Recurrence is **not** available on this JXA path. There is no recurrence write or series edit here, and EventKit is not in this build. Use Reminders.app itself (or a future approved wrap) for repeating reminders. See `grok-reminders gaps`.
+
+## Sections and smart lists
+
+Sections and smart lists are not scriptable on this JXA path. See `docs/REMINDERS_SECTIONS.md`. Create them in Reminders.app, or run a Shortcut you already have. This CLI can `lists`, `add`, `done`, `move`, and `flag`. `move` and `flag` stay dry-run unless `--force`. Recurrence is still not available. There is no `section` or `smart-list` command.
