@@ -9,7 +9,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "0.1.4"
+VERSION = "0.1.5"
 LIB = Path(__file__).resolve().parent / "reminders.js"
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import cache as remcache  # noqa: E402
@@ -17,7 +17,7 @@ import cache as remcache  # noqa: E402
 
 GAPS = [
     "This is Reminders.app scripting, not RemCTL and not EventKit. RemCTL may still be installed on this Mac. Do not call it for Apple Desk work.",
-    "No smart lists, sections, tags, subtasks, recurrence, location alarms, early reminders, or URLs. Flag is read-only. There is no move between lists.",
+    "No smart lists, sections, tags, subtasks, location alarms, early reminders, or URLs. Recurrence is not available on this JXA path and EventKit is not in this build. move and flag write exist but stay dry-run unless --force.",
     "Sharing is out. You cannot invite someone or see sharees.",
     "Due times are this Mac's local timezone. Pass YYYY-MM-DD or YYYY-MM-DD HH:MM. A date with no time is stored at 09:00 local.",
     "today is incomplete reminders whose due day is today. upcoming is incomplete reminders due from today through N days (default 7). Reminders with no due date are in neither.",
@@ -348,6 +348,71 @@ def cmd_delete(args):
     emit(data, as_json, lambda d: print(f"deleted {d.get('id')}"))
 
 
+
+DRY_RUN_MESSAGE = "dry-run: Reminders.app was not called. Pass --force to apply."
+
+
+def _print_mutate(data):
+    op = data.get("op") or ""
+    prefix = "dry-run " if data.get("dryRun") else ""
+    bits = [f"{prefix}{op} id {data.get('id')}".strip()]
+    if data.get("state") is not None:
+        bits.append(f"state {data.get('state')}")
+    if data.get("to") is not None:
+        bits.append(f"to {data.get('to')}")
+    if data.get("list") is not None and data.get("to") is None:
+        bits.append(f"list {data.get('list')}")
+    print(" ".join(bits))
+    if data.get("message"):
+        print(data["message"])
+
+
+def cmd_flag(args):
+    as_json = args.json
+    if not args.id:
+        die(2, "missing_id", "flag needs --id. Reminders was not called.", as_json)
+    state = args.state.strip() if isinstance(args.state, str) else ""
+    if state not in ("flagged", "unflagged"):
+        die(2, "bad_request", "flag needs --state flagged or unflagged. Reminders was not called.", as_json)
+    if not args.force:
+        data = {
+            "ok": True,
+            "dryRun": True,
+            "applied": False,
+            "op": "flag",
+            "id": args.id,
+            "state": state,
+            "message": DRY_RUN_MESSAGE,
+        }
+        emit(data, as_json, _print_mutate)
+        return
+    data = call_jxa({"op": "flag", "id": args.id, "state": state, "force": True}, LONG_TIMEOUT, as_json)
+    emit(data, as_json, _print_mutate)
+
+
+def cmd_move(args):
+    as_json = args.json
+    if not args.id:
+        die(2, "missing_id", "move needs --id. Reminders was not called.", as_json)
+    dest = args.to.strip() if isinstance(args.to, str) else ""
+    if not dest:
+        die(2, "bad_request", "move needs --to LIST. Reminders was not called.", as_json)
+    if not args.force:
+        data = {
+            "ok": True,
+            "dryRun": True,
+            "applied": False,
+            "op": "move",
+            "id": args.id,
+            "to": dest,
+            "message": DRY_RUN_MESSAGE,
+        }
+        emit(data, as_json, _print_mutate)
+        return
+    data = call_jxa({"op": "move", "id": args.id, "to": dest, "force": True}, LONG_TIMEOUT, as_json)
+    emit(data, as_json, _print_mutate)
+
+
 def cmd_gaps(args):
     as_json = getattr(args, "json", False)
     data = {"ok": True, "tool": "grok-reminders", "version": VERSION, "gaps": GAPS}
@@ -360,7 +425,7 @@ def cmd_gaps(args):
 
 
 def build_parser():
-    parser = argparse.ArgumentParser(prog="grok-reminders", description="Local Apple Reminders CLI (not RemCTL)")
+    parser = argparse.ArgumentParser(prog="grok-reminders", description="Local Apple Reminders CLI (JXA). move and flag are dry-run unless --force. Not RemCTL, not EventKit.")
     parser.add_argument("--version", action="version", version=f"grok-reminders {VERSION}")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -422,6 +487,21 @@ def build_parser():
     delete.add_argument("--id", required=True)
     delete.add_argument("--force", action="store_true")
     delete.set_defaults(func=cmd_delete)
+
+
+    flag = sub.add_parser("flag", help="Flag or unflag one reminder. Dry-run unless --force.")
+    add_json(flag)
+    flag.add_argument("--id")
+    flag.add_argument("--state", help="flagged or unflagged")
+    flag.add_argument("--force", action="store_true", help="Apply in Reminders.app. Without this, Reminders is not called.")
+    flag.set_defaults(func=cmd_flag)
+
+    move = sub.add_parser("move", help="Move one reminder to --to list. Dry-run unless --force.")
+    add_json(move)
+    move.add_argument("--id")
+    move.add_argument("--to", help="Destination list name")
+    move.add_argument("--force", action="store_true", help="Apply in Reminders.app. Without this, Reminders is not called.")
+    move.set_defaults(func=cmd_move)
 
     gaps = sub.add_parser("gaps")
     add_json(gaps)

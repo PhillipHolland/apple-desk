@@ -322,5 +322,94 @@ function run(argv) {
     return fail("not_found", "No reminder with that id. Nothing was changed.");
   }
 
+
+  if (op === "flag" || op === "move") {
+    if (payload.force !== true) {
+      return fail("needs_force", op + " refuses unless force is true. Reminders was not called.");
+    }
+    var rid = String(payload.id || "");
+    if (!rid) return fail("missing_id", "Pass an id. Nothing was changed.");
+    var pool = lists();
+    var target = null;
+    var sourceList = null;
+    for (var p = 0; p < pool.length; p++) {
+      var ids;
+      try { ids = asArray(pool[p].reminders.id()); } catch (e) { continue; }
+      for (var q = 0; q < ids.length; q++) {
+        if (String(ids[q]) !== rid) continue;
+        target = pool[p].reminders[q];
+        sourceList = pool[p];
+        break;
+      }
+      if (target) break;
+    }
+    if (!target) return fail("not_found", "No reminder with that id. Nothing was changed.");
+
+    if (op === "flag") {
+      var state = String(payload.state || "");
+      if (state !== "flagged" && state !== "unflagged") {
+        return fail("bad_request", "flag state must be flagged or unflagged. Nothing was changed.");
+      }
+      try {
+        target.flagged = (state === "flagged");
+      } catch (eFlag) {
+        return fail("reminders_error", "Reminders did not update flagged: " + eFlag);
+      }
+      return JSON.stringify({ok: true, applied: true, dryRun: false, op: "flag", id: rid, state: state});
+    }
+
+    var destName = String(payload.to || "").trim();
+    if (!destName) return fail("bad_request", "move needs a destination list. Nothing was changed.");
+    var destHits = findList(destName);
+    if (destHits.length === 0) return fail("not_found", "No list named " + destName + ". Nothing was changed.");
+    if (destHits.length > 1) return fail("ambiguous", "More than one list matches " + destName + ". Nothing was changed.");
+    var dest = destHits[0];
+    var srcName = "";
+    var dstName = "";
+    try { srcName = String(sourceList.name()); } catch (eS) { srcName = ""; }
+    try { dstName = String(dest.name()); } catch (eD) { dstName = destName; }
+    try {
+      if (String(sourceList.id()) === String(dest.id())) {
+        return JSON.stringify({ok: true, applied: true, dryRun: false, op: "move", id: rid, to: dstName, list: dstName, sameList: true});
+      }
+    } catch (eSame) {}
+
+    var moved = false;
+    try {
+      Reminders.move(target, {to: dest});
+      moved = true;
+    } catch (eMove) {
+      moved = false;
+    }
+    if (!moved) {
+      // Fallback: copy properties into destination, then delete source.
+      var title = "";
+      var body = "";
+      var dueDate = null;
+      var pri = 0;
+      var wasFlagged = false;
+      var wasCompleted = false;
+      try { title = String(target.name()); } catch (e1) { title = ""; }
+      try { body = String(target.body()); } catch (e2) { body = ""; }
+      try { dueDate = target.dueDate(); } catch (e3) { dueDate = null; }
+      try { pri = Number(target.priority()); } catch (e4) { pri = 0; }
+      try { wasFlagged = Boolean(target.flagged()); } catch (e5) { wasFlagged = false; }
+      try { wasCompleted = Boolean(target.completed()); } catch (e6) { wasCompleted = false; }
+      var props = {name: title};
+      if (body) props.body = body;
+      if (dueDate) props.dueDate = dueDate;
+      if (pri) props.priority = pri;
+      if (wasFlagged) props.flagged = true;
+      if (wasCompleted) props.completed = true;
+      var created = Reminders.Reminder(props);
+      dest.reminders.push(created);
+      try { target.delete(); } catch (eDel) {
+        return fail("reminders_error", "Copied to " + dstName + " but could not delete source: " + eDel);
+      }
+      try { rid = String(created.id()); } catch (eId) {}
+    }
+    return JSON.stringify({ok: true, applied: true, dryRun: false, op: "move", id: rid, to: dstName, list: dstName, from: srcName});
+  }
+
   return fail("bad_request", "unknown op");
 }
