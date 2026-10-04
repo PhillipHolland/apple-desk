@@ -145,7 +145,7 @@ def run_cli(argv):
 
 def main():
     failures = []
-    check(failures, "version is 0.1.3", cli.VERSION == "0.1.3")
+    check(failures, "version is 0.1.4", cli.VERSION == "0.1.4")
     parser = cli.build_parser()
     search = next(action for action in parser._subparsers._actions if getattr(action, "choices", None) and "search" in action.choices)
     field = next(a for a in search.choices["search"]._actions if getattr(a, "dest", None) == "field")

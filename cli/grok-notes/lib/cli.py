@@ -13,7 +13,7 @@ from pathlib import Path
 import index as indexlib
 import markdown_notes
 
-VERSION = "0.2.3"
+VERSION = "0.2.4"
 ROOT = Path(__file__).resolve().parent.parent
 LIB = Path(__file__).resolve().parent / "notes.js"
 
@@ -116,7 +116,7 @@ def print_doctor(data):
     print(f"grok-notes {data.get('version')}  ok")
     print("backend: Notes.app JXA (interim; not MacStories NotesCTL)")
     print(f"automation: {data.get('automation')}")
-    print(f"writes: enabled (delete still needs --force)")
+    print("writes: create-note, edit, and append are dry-run unless --force; delete still needs --force")
     print(f"Notes {app.get('version')} ({app.get('id')})")
     print(f"accounts: {data.get('accounts')}   folders: {data.get('folders')}")
     if idx.get("exists"):
@@ -301,7 +301,7 @@ def print_gaps(_data=None):
     print("What Notes scripting cannot do on this Mac (honest gaps):")
     for g in GAPS:
         print(f"- {g}")
-    print("Cache: ~/.cache/grok-notes/index.sqlite holds plaintext so search does not walk Apple Events. It is mode 0600. grok-notes cache-clear deletes the cache only, not the notes.")
+    print("Cache: ~/.cache/grok-notes/index.sqlite is as sensitive as Notes.app. Default reindex stores titles, folders, and dates only. --index-bodies stores note bodies (capped). The directory is mode 0700 and the file is mode 0600. grok-notes cache-clear deletes that index only, not the notes.")
 
 
 def _print_warnings(data):
@@ -427,6 +427,7 @@ def apply_reminder(plan):
         due=plan.get("due"),
         notes=plan.get("notes"),
     )
+    payload["force"] = True
     return reminders.call_jxa(payload, reminders.LONG_TIMEOUT, False)
 
 
@@ -555,21 +556,24 @@ def build_parser():
     p.add_argument("--limit", type=int)
     p.add_argument("--live", action="store_true", help="Apple Event search, slow")
     p.add_argument("--include-trash", action="store_true")
-    p = sub.add_parser("reindex", parents=[parent], help="refresh the local search index")
-    p.add_argument("--full", action="store_true", help="reread every note body")
+    p = sub.add_parser("reindex", parents=[parent], help="refresh the local search index (metadata only unless --index-bodies)")
+    p.add_argument("--full", action="store_true", help="with --index-bodies, reread every note body")
+    p.add_argument("--index-bodies", action="store_true", help="store note bodies in the local index; default is titles, folders, and dates only")
     p.add_argument("--include-trash", action="store_true")
     sub.add_parser("status", parents=[parent], help="index age and counts")
     p = sub.add_parser("cache-clear", parents=[parent], help="delete the local index only")
     p = sub.add_parser("tags", parents=[parent], help="hashtags from the index (no Apple Event)")
     p.add_argument("--limit", type=int)
     p.add_argument("--folder", help="Only notes in this folder name or path")
-    p = sub.add_parser("create-note", parents=[parent])
+    p = sub.add_parser("create-note", parents=[parent], help="Create one note. Dry-run unless --force.")
     p.add_argument("--title", required=True)
     p.add_argument("--body")
     p.add_argument("--html")
     p.add_argument("--folder")
     p.add_argument("--account")
     p.add_argument("--parent")
+    p.add_argument("--force", action="store_true", help="Apply in Notes.app. Without this, Notes is not called.")
+    p.add_argument("--dry-run", action="store_true", help="Do not call Notes.app. Wins over --force.")
     p = sub.add_parser("create-folder", parents=[parent])
     p.add_argument("name")
     p.add_argument("--account")
@@ -585,15 +589,19 @@ def build_parser():
     p.add_argument("--parent")
     p.add_argument("--force", action="store_true")
     p.add_argument("--allow-large", action="store_true")
-    p = sub.add_parser("edit", parents=[parent])
+    p = sub.add_parser("edit", parents=[parent], help="Edit one note. Dry-run unless --force.")
     add_target(p)
     p.add_argument("--body")
     p.add_argument("--html")
     p.add_argument("--append")
     p.add_argument("--rename")
-    p = sub.add_parser("append", parents=[parent])
+    p.add_argument("--force", action="store_true", help="Apply in Notes.app. Without this, Notes is not called.")
+    p.add_argument("--dry-run", action="store_true", help="Do not call Notes.app. Wins over --force.")
+    p = sub.add_parser("append", parents=[parent], help="Append text to one note. Dry-run unless --force.")
     add_target(p)
     p.add_argument("--text", required=True)
+    p.add_argument("--force", action="store_true", help="Apply in Notes.app. Without this, Notes is not called.")
+    p.add_argument("--dry-run", action="store_true", help="Do not call Notes.app. Wins over --force.")
     p = sub.add_parser("move", parents=[parent])
     add_target(p)
     p.add_argument("--to-folder", required=True)
@@ -831,7 +839,7 @@ def main(argv=None):
             return call_jxa(payload, timeout, as_json)
         if not as_json:
             print("indexing via Notes.app…", file=sys.stderr)
-        data = indexlib.reindex(jxa, full=args.full, include_trash=args.include_trash)
+        data = indexlib.reindex(jxa, full=args.full, include_trash=args.include_trash, index_bodies=bool(args.index_bodies))
         emit(data, as_json, print_reindex)
         return 0
     if args.cmd == "folders" and args.cached:
@@ -885,7 +893,19 @@ def main(argv=None):
             payload["limit"] = args.limit
         timeout = 120
     elif args.cmd == "create-note":
-        payload = {"cmd": "create-note", "title": args.title, "body": args.body, "html": args.html, "folder": args.folder, "account": args.account, "parent": args.parent}
+        if args.dry_run or not args.force:
+            data = {
+                "ok": True,
+                "dryRun": True,
+                "applied": False,
+                "op": "create-note",
+                "title": args.title,
+                "folder": args.folder,
+                "message": "dry-run: Notes.app was not called. Pass --force to apply.",
+            }
+            emit(data, as_json, lambda d: print(d["message"]))
+            return 0
+        payload = {"cmd": "create-note", "title": args.title, "body": args.body, "html": args.html, "folder": args.folder, "account": args.account, "parent": args.parent, "force": True}
         mutating = True
     elif args.cmd == "create-folder":
         payload = {"cmd": "create-folder", "name": args.name, "account": args.account, "parent": args.parent}
@@ -898,12 +918,37 @@ def main(argv=None):
         mutating = True
         timeout = 90
     elif args.cmd == "edit":
+        if args.dry_run or not args.force:
+            data = {
+                "ok": True,
+                "dryRun": True,
+                "applied": False,
+                "op": "edit",
+                "title": getattr(args, "title", None) or getattr(args, "title_flag", None),
+                "id": args.id,
+                "message": "dry-run: Notes.app was not called. Pass --force to apply.",
+            }
+            emit(data, as_json, lambda d: print(d["message"]))
+            return 0
         payload = target_payload(args, "edit")
-        payload.update({"body": args.body, "html": args.html, "append": args.append, "rename": args.rename})
+        payload.update({"body": args.body, "html": args.html, "append": args.append, "rename": args.rename, "force": True})
         mutating = True
     elif args.cmd == "append":
+        if args.dry_run or not args.force:
+            data = {
+                "ok": True,
+                "dryRun": True,
+                "applied": False,
+                "op": "append",
+                "title": getattr(args, "title", None) or getattr(args, "title_flag", None),
+                "id": args.id,
+                "message": "dry-run: Notes.app was not called. Pass --force to apply.",
+            }
+            emit(data, as_json, lambda d: print(d["message"]))
+            return 0
         payload = target_payload(args, "edit")
         payload["append"] = args.text
+        payload["force"] = True
         mutating = True
     elif args.cmd == "move":
         payload = target_payload(args, "move")

@@ -80,7 +80,7 @@ def main():
             failures.append(name)
             print("FAIL", name)
 
-    check("version is 0.1.2", cli.VERSION == "0.1.2")
+    check("version is 0.1.3", cli.VERSION == "0.1.3")
     subs = None
     import argparse
     for action in cli.build_parser()._actions:
@@ -157,7 +157,7 @@ def main():
     check("force exit 0", code == 0 and data.get("applied") is True and data.get("dryRun") is False)
     check("force notes once", len(NOTES_CALLS) == 1)
     payload = (NOTES_CALLS[0] or {}).get("payload") or {}
-    check("force uses create-note", payload.get("cmd") == "create-note")
+    check("force uses create-note", payload.get("cmd") == "create-note" and payload.get("force") is True)
     check("force title", payload.get("title") == FAKE_TITLE)
     check("force body is url", payload.get("body") == FAKE_URL)
     check("force note id", data.get("noteId") == "note-fixture-1")

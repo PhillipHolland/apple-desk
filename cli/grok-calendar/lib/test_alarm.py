@@ -68,7 +68,7 @@ def main():
     check("move is not a subcommand", "move" not in subs)
     check("attendees is not a subcommand", "attendees" not in subs)
     check("rsvp is not a subcommand", "rsvp" not in subs)
-    check("version is 0.1.6", cli.VERSION == "0.1.6")
+    check("version is 0.1.7", cli.VERSION == "0.1.7")
 
     gaps_blob = " ".join(cli.GAPS).lower()
     check("gaps say display alarm dry-run", "display alarm" in gaps_blob and "dry-run" in gaps_blob)

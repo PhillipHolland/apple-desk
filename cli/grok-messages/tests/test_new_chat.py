@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import sqlite3
 import sys
 import tempfile
@@ -12,6 +13,9 @@ from pathlib import Path
 
 LIB = Path(__file__).resolve().parents[1] / "lib"
 sys.path.insert(0, str(LIB))
+
+# Confirm tokens must not land in the real home. Set this before importing cli.
+os.environ["GROK_MESSAGES_CONFIRM_DIR"] = tempfile.mkdtemp(prefix="grok-messages-confirm-test-")
 
 import cli  # noqa: E402
 import db  # noqa: E402
@@ -166,7 +170,7 @@ def main():
             failures.append(name)
             print("FAIL", name)
 
-    check("version is 0.2.11", cli.VERSION == "0.2.11")
+    check("version is 0.2.12", cli.VERSION == "0.2.12")
     check("email handle", db.is_new_chat_handle(HANDLE))
     check("phone handle", db.is_new_chat_handle(PHONE))
     check("display name is not a handle", not db.is_new_chat_handle(GROUP_NAME))
@@ -186,7 +190,9 @@ def main():
     check("name does not create", code == 2 and json.loads(out)["error"] == "not_found" and guard.send == [] and guard.jxa == [])
 
     code, out, err, guard = run(["send", "--to", HANDLE, "--text", BODY, "--json"], EMPTY)
-    check("default does not apply", code == 2 and json.loads(out)["error"] == "needs_force" and guard.opened == 0 and guard.send == [])
+    data = json.loads(out)
+    check("default is a dry-run", code == 0 and data.get("dryRun") is True and data.get("sent") is False and guard.send == [] and guard.jxa == [])
+    check("default prints a confirm token", bool(data.get("confirmToken")) and BODY not in out)
 
     code, out, err, guard = run(["send", "--to", HANDLE, "--text", BODY, "--dry-run", "--json"], EMPTY)
     data = json.loads(out)
@@ -199,9 +205,14 @@ def main():
 
     code, out, err, guard = run(["send", "--to", PHONE, "--text", BODY, "--dry-run", "--force", "--json"], EMPTY)
     data = json.loads(out)
-    check("dry-run wins over force", code == 0 and data.get("sent") is False and guard.send == [] and guard.jxa == [])
+    check("dry-run wins over force", code == 0 and data.get("sent") is False and guard.send == [] and guard.jxa == [] and bool(data.get("confirmToken")))
 
     code, out, err, guard = run(["send", "--to", HANDLE, "--text", BODY, "--force", "--json"], EMPTY)
+    check("force alone does not send", code == 2 and json.loads(out)["error"] == "needs_confirm" and guard.opened == 0 and guard.send == [])
+
+    code, out, err, guard = run(["send", "--to", HANDLE, "--text", BODY, "--json"], EMPTY)
+    token = json.loads(out)["confirmToken"]
+    code, out, err, guard = run(["send", "--to", HANDLE, "--text", BODY, "--force", "--confirm", token, "--json"], EMPTY)
     data = json.loads(out)
     check("force exits 0", code == 0 and err == "")
     check("force sent once", data.get("sent") is True and data.get("created") is True and len(guard.send) == 1)
@@ -219,7 +230,9 @@ def main():
     check("existing dry-run does not send", guard.send == [] and data.get("sent") is False)
     check("existing dry-run only resolves", [item.get("op") for item in guard.jxa] == ["resolve_participant"])
 
-    code, out, err, guard = run(["send", "--to", KEPT, "--text", BODY, "--force", "--json"], [KEPT_CHAT])
+    code, out, err, guard = run(["send", "--to", KEPT, "--text", BODY, "--json"], [KEPT_CHAT])
+    token = json.loads(out)["confirmToken"]
+    code, out, err, guard = run(["send", "--to", KEPT, "--text", BODY, "--force", "--confirm", token, "--json"], [KEPT_CHAT])
     data = json.loads(out)
     payload = guard.send[0] if guard.send else {}
     check("existing force reuses the chat", code == 0 and data.get("sent") is True and "createIfMissing" not in payload)

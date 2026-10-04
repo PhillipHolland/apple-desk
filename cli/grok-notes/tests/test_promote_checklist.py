@@ -75,7 +75,7 @@ def main():
             failures.append(name)
             print("FAIL", name)
 
-    check("version is 0.2.3", cli.VERSION == "0.2.3")
+    check("version is 0.2.4", cli.VERSION == "0.2.4")
     subs = None
     import argparse
     for action in cli.build_parser()._actions:
@@ -142,7 +142,7 @@ def main():
     check("force notes show only", NOTES_CALLS == [{"cmd": "show", "id": NOTE_ID, "full": True}])
     check("force reminders once", len(REM_CALLS) == 1)
     payload = REM_CALLS[0] if REM_CALLS else {}
-    check("force uses add op", payload.get("op") == "add")
+    check("force uses add op", payload.get("op") == "add" and payload.get("force") is True)
     check("force title", payload.get("title") == "Lock door")
     check("force notes contain backlink", NOTE_ID in (payload.get("notes") or "") and NOTE_TITLE in (payload.get("notes") or ""))
     check("force omits due when not passed", "due" not in payload)

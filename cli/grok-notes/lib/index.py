@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Local Notes search index. Plaintext stays on this Mac under ~/.cache/grok-notes."""
+"""Local Notes search index under ~/.cache/grok-notes.
+
+Default reindex stores titles, folders, and dates only. Pass index_bodies
+to store note bodies. That file is as sensitive as Notes.app. cache-clear
+deletes the index only.
+"""
 from __future__ import annotations
 
 import json
@@ -177,7 +182,7 @@ def _norm_note(n, body):
     }
 
 
-def _save(con, rows, folders, mode, warnings, seconds):
+def _save(con, rows, folders, mode, warnings, seconds, index_bodies=False):
     init_db(con)
     con.execute("DELETE FROM notes")
     con.execute("DELETE FROM folders")
@@ -221,12 +226,15 @@ def _save(con, rows, folders, mode, warnings, seconds):
         "mode": mode,
         "warnings": str(len(warnings)),
         "seconds": f"{seconds:.2f}",
+        "bodies": "1" if index_bodies else "0",
     }.items():
         con.execute(
             "INSERT INTO meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             (key, value),
         )
     con.commit()
+    if not index_bodies:
+        con.execute("VACUUM")
     os.chmod(DB_PATH, 0o600)
 
 
@@ -238,11 +246,99 @@ def _load_old(con):
     return old
 
 
-def reindex(jxa, full=False, include_trash=False):
+def _reindex_metadata(jxa, include_trash, t0):
+    """Titles, folders, and dates only. Does not read or keep note bodies."""
+    meta = jxa({"cmd": "export", "mode": "stamp", "includeTrash": include_trash}, timeout=120)
+    if not meta.get("ok"):
+        return meta
+    warnings = list(meta.get("warnings") or [])
+    rows = []
+    for n in meta.get("notes") or []:
+        if not n.get("id"):
+            continue
+        row = _norm_note(n, "")
+        row["body"] = ""
+        row["snippet"] = ""
+        row["body_chars"] = 0
+        rows.append(row)
+    folders = []
+    for f in meta.get("folders") or []:
+        if not f.get("id"):
+            continue
+        folders.append({
+            "id": f.get("id"),
+            "name": f.get("name") or "",
+            "account": f.get("account") or "",
+            "parent": f.get("parent") or "",
+            "path": f.get("path") or f.get("name") or "",
+            "depth": int(f.get("depth") or 0),
+            "shared": bool(f.get("shared")),
+            "trash": bool(f.get("trash")),
+        })
+    stats = {
+        "mode": "metadata",
+        "added": len(rows),
+        "bodiesRefreshed": 0,
+        "unchanged": 0,
+        "removed": 0,
+        "indexBodies": False,
+    }
+    con = connect()
+    try:
+        seconds = time.time() - t0
+        _save(con, rows, folders, stats["mode"], warnings, seconds, index_bodies=False)
+    finally:
+        con.close()
+    trash = sum(1 for f in folders if f.get("trash"))
+    return {
+        "ok": True,
+        "notes": len(rows),
+        "folders": len(folders),
+        "trashFolders": trash,
+        "includeTrash": bool(include_trash),
+        "warnings": warnings,
+        "seconds": round(time.time() - t0, 2),
+        "path": str(DB_PATH),
+        "indexBodies": False,
+        **stats,
+    }
+
+
+def _bodies_already_indexed(con):
+    """True when this index already stores note bodies.
+
+    A metadata reindex records bodies=0. An older index has body text and no flag.
+    --index-bodies keeps that copy and only rereads changed notes.
+    """
+    try:
+        row = con.execute("SELECT value FROM meta WHERE key='bodies'").fetchone()
+    except sqlite3.OperationalError:
+        return False
+    if row is not None and row[0] == "1":
+        return True
+    if row is not None and row[0] == "0":
+        return False
+    try:
+        count = con.execute("SELECT count(*) FROM notes WHERE length(ifnull(body, '')) > 0").fetchone()[0]
+    except sqlite3.OperationalError:
+        return False
+    return bool(count)
+
+
+def reindex(jxa, full=False, include_trash=False, index_bodies=False):
     t0 = time.time()
     ensure_cache()
+    if not index_bodies:
+        return _reindex_metadata(jxa, include_trash, t0)
     exists = DB_PATH.exists() and DB_PATH.stat().st_size > 0
-    use_full = full or not exists
+    bodies_on = False
+    if exists:
+        con = connect()
+        try:
+            bodies_on = _bodies_already_indexed(con)
+        finally:
+            con.close()
+    use_full = full or not exists or not bodies_on
     warnings = []
     if use_full:
         data = jxa({"cmd": "export", "mode": "full", "includeTrash": include_trash}, timeout=180)
@@ -380,7 +476,7 @@ def reindex(jxa, full=False, include_trash=False):
     con = connect()
     try:
         seconds = time.time() - t0
-        _save(con, rows, folders, stats["mode"], warnings, seconds)
+        _save(con, rows, folders, stats["mode"], warnings, seconds, index_bodies=True)
     finally:
         con.close()
     trash = sum(1 for f in folders if f.get("trash"))
@@ -393,6 +489,7 @@ def reindex(jxa, full=False, include_trash=False):
         "warnings": warnings,
         "seconds": round(time.time() - t0, 2),
         "path": str(DB_PATH),
+        "indexBodies": True,
         **stats,
     }
 

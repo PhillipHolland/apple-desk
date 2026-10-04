@@ -194,6 +194,12 @@ def main():
         raise SystemExit(FALLBACK)
     if cmd == "doctor":
         raise SystemExit(doctor(bin_path, as_json))
+    # --dry-run must not call reminder-cli. Exit 86 so the in-house CLI prints the dry-run.
+    if cmd in {"add", "done", "delete"} and flags.get("dry-run"):
+        raise SystemExit(FALLBACK)
+    # add and done are dry-run unless --force. Fall through to the JXA dry-run.
+    if cmd in {"add", "done"} and not flags.get("force"):
+        raise SystemExit(FALLBACK)
     if cmd == "delete" and not flags.get("force"):
         msg = "delete refuses without --force. reminder-cli was not called."
         if as_json:

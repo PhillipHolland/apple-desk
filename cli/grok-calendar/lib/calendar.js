@@ -238,6 +238,9 @@ function showEvent(app, payload) {
 }
 
 function createEvent(app, payload) {
+  if (payload.force !== true) {
+    return { ok: false, error: "needs_force", message: "create refuses unless force is true. Calendar was not changed." };
+  }
   if (!payload.title) return { ok: false, error: "missing_title", message: "create needs --title." };
   var selected = selectCalendars(app, payload.calendar);
   if (!selected.ok) return selected;
@@ -271,6 +274,9 @@ function createEvent(app, payload) {
 }
 
 function updateEvent(app, payload) {
+  if (payload.force !== true) {
+    return { ok: false, error: "needs_force", message: "update refuses unless force is true. Calendar was not changed." };
+  }
   if (!payload.uid) return { ok: false, error: "missing_target", message: "update needs --uid." };
   var found = findEvent(app, payload);
   if (!found.ok) return found;

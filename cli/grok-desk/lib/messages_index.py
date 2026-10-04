@@ -1,6 +1,8 @@
 """Build ~/.cache/grok-messages/index.sqlite from chat.db, read-only.
 
 Never copies chat.db. Never sends. Group metadata may be stored.
+Default build stores chat metadata only. index_bodies stores message text.
+That file is as sensitive as Messages when bodies are present.
 The send path stays in grok-messages (1:1 unless --chat-guid).
 """
 from __future__ import annotations
@@ -79,7 +81,7 @@ def _meta(con: sqlite3.Connection, key: str) -> str | None:
     return None if row is None else row[0]
 
 
-def build(full: bool = False) -> dict:
+def build(full: bool = False, index_bodies: bool = False) -> dict:
     path = db_path(CACHE_NAME)
     try:
         src = _open_source()
@@ -100,7 +102,6 @@ def build(full: bool = False) -> dict:
         }
     try:
         dest = _open_dest(full)
-        watermark = 0 if full else int(_meta(dest, "max_message_rowid") or 0)
         chats = src.execute(
             """
             SELECT
@@ -137,41 +138,62 @@ def build(full: bool = False) -> dict:
                 if row["guid"]
             ],
         )
-        texts = src.execute(
-            """
-            SELECT m.ROWID AS message_rowid, c.guid AS chat_guid, substr(m.text, 1, ?) AS body
-            FROM message m
-            JOIN chat_message_join cm ON cm.message_id = m.ROWID
-            JOIN chat c ON c.ROWID = cm.chat_id
-            WHERE m.ROWID > ?
-              AND m.text IS NOT NULL
-              AND length(m.text) > 0
-            """,
-            (BODY_CAP, watermark),
-        )
         added = 0
-        max_rowid = watermark
-        batch = []
-        for row in texts:
-            body = row["body"]
-            if not body or not row["chat_guid"]:
-                continue
-            batch.append((row["chat_guid"], int(row["message_rowid"]), body))
-            if int(row["message_rowid"]) > max_rowid:
-                max_rowid = int(row["message_rowid"])
-            if len(batch) >= 500:
+        if index_bodies:
+            if full:
+                watermark = 0
+            else:
+                # Keep rows already stored. A legacy index has no bodies flag.
+                fts_count = int(dest.execute("SELECT count(*) FROM message_fts").fetchone()[0] or 0)
+                bodies_flag = _meta(dest, "bodies")
+                if fts_count == 0 and bodies_flag != "1":
+                    watermark = 0
+                else:
+                    stored = int(_meta(dest, "max_message_rowid") or 0)
+                    if stored <= 0 and fts_count:
+                        row = dest.execute("SELECT ifnull(max(message_rowid), 0) FROM message_fts").fetchone()
+                        stored = int(row[0] or 0)
+                    watermark = stored
+            texts = src.execute(
+                """
+                SELECT m.ROWID AS message_rowid, c.guid AS chat_guid, substr(m.text, 1, ?) AS body
+                FROM message m
+                JOIN chat_message_join cm ON cm.message_id = m.ROWID
+                JOIN chat c ON c.ROWID = cm.chat_id
+                WHERE m.ROWID > ?
+                  AND m.text IS NOT NULL
+                  AND length(m.text) > 0
+                """,
+                (BODY_CAP, watermark),
+            )
+            max_rowid = watermark
+            batch = []
+            for row in texts:
+                body = row["body"]
+                if not body or not row["chat_guid"]:
+                    continue
+                batch.append((row["chat_guid"], int(row["message_rowid"]), body))
+                if int(row["message_rowid"]) > max_rowid:
+                    max_rowid = int(row["message_rowid"])
+                if len(batch) >= 500:
+                    dest.executemany(
+                        "INSERT INTO message_fts(chat_guid, message_rowid, body) VALUES (?, ?, ?)",
+                        batch,
+                    )
+                    added += len(batch)
+                    batch.clear()
+            if batch:
                 dest.executemany(
                     "INSERT INTO message_fts(chat_guid, message_rowid, body) VALUES (?, ?, ?)",
                     batch,
                 )
                 added += len(batch)
-                batch.clear()
-        if batch:
-            dest.executemany(
-                "INSERT INTO message_fts(chat_guid, message_rowid, body) VALUES (?, ?, ?)",
-                batch,
-            )
-            added += len(batch)
+            mode = "full" if full or watermark == 0 else "incremental"
+        else:
+            # Metadata only: do not read message.text. Drop any earlier body copy.
+            dest.execute("DELETE FROM message_fts")
+            max_rowid = 0
+            mode = "metadata"
         chat_count = dest.execute("SELECT count(*) FROM chats").fetchone()[0]
         group_count = dest.execute("SELECT count(*) FROM chats WHERE is_group=1").fetchone()[0]
         fts_count = dest.execute("SELECT count(*) FROM message_fts").fetchone()[0]
@@ -179,7 +201,8 @@ def build(full: bool = False) -> dict:
         for key, value in {
             "indexed_at": indexed_at,
             "max_message_rowid": str(max_rowid),
-            "mode": "full" if full or watermark == 0 else "incremental",
+            "mode": mode,
+            "bodies": "1" if index_bodies else "0",
             "source": "chat.db-readonly",
         }.items():
             dest.execute(
@@ -187,6 +210,8 @@ def build(full: bool = False) -> dict:
                 (key, value),
             )
         dest.commit()
+        if not index_bodies:
+            dest.execute("VACUUM")
     except sqlite3.OperationalError as exc:
         return {
             "ok": False,
@@ -206,7 +231,8 @@ def build(full: bool = False) -> dict:
         "ok": True,
         "surface": "messages",
         "path": str(path),
-        "mode": "full" if full or watermark == 0 else "incremental",
+        "mode": mode,
+        "indexBodies": bool(index_bodies),
         "chats": chat_count,
         "groups": group_count,
         "ftsRows": fts_count,
