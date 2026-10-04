@@ -57,7 +57,7 @@ Wrap the `imsg` binary that implements `react` (`$GROK_MESSAGES_IMSG` when execu
 
 ## Deferred (not prod)
 
-Passwords, HomeKit, Photos, Freeform, and Safari. `grok-safari` 0.1.1 exists (`doctor` `status` `bookmarks` `reading-list` `search` `reindex`) and is still not a product surface. Also out: Notification Center, Maps, Find My, Screen Time, Journal, Voice Memos, Weather, Clock, Wallet, and Settings toggles.
+Passwords, HomeKit, Photos, Freeform, and Safari. `grok-safari` 0.1.2 exists (`doctor` `status` `bookmarks` `reading-list` `search` `to-note` `reindex`) and is still not a full product surface. Also out: Notification Center, Maps, Find My, Screen Time, Journal, Voice Memos, Weather, Clock, Wallet, and Settings toggles.
 
 ## Gaps
 

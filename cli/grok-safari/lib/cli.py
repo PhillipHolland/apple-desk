@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """grok-safari: read Safari bookmarks and Reading List from Bookmarks.plist.
 
-Portable for any user on any Mac. Read-only: does not modify bookmarks, open
-URLs, or read History, passwords, or cookies.
+Portable for any user on any Mac. Does not modify bookmarks, open URLs, or read
+History, passwords, or cookies. to-note can create one Note from a Reading List
+item through grok-notes; dry-run is the default.
 """
 from __future__ import annotations
 
@@ -15,7 +16,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-VERSION = "0.1.1"
+VERSION = "0.1.2"
 TOOL = "grok-safari"
 MAX_LIMIT = 50
 DEFAULT_LIMIT = 20
@@ -27,9 +28,9 @@ FOLDER_LABELS = {
 GAPS = [
     "Reads only ~/Library/Safari/Bookmarks.plist. History, cookies, passwords, iCloud Tabs, and the open-tab session are not read.",
     "If the plist is unreadable, doctor exits needs_full_disk_access once. System Settings is not opened.",
-    "Bookmarks and Reading List are local Safari data. They can lag iCloud sync. Nothing is written back.",
+    "Bookmarks and Reading List are local Safari data. They can lag iCloud sync. Nothing is written back to Safari.",
     "Reading List preview text is not returned. Titles and URLs are.",
-    "There is no add, delete, move, or open. URLs are not launched.",
+    "Reading List items are not added, edited, deleted, or opened. URLs are not launched. to-note is the only write path: dry-run by default; --force creates one Note through grok-notes create-note. The note title is the item title and the body is the URL.",
     "Folder names BookmarksBar and BookmarksMenu are shown as Favorites and Bookmarks Menu. Other folders keep the plist title.",
     "A proxy such as History is skipped. It is not a bookmark.",
     "Optional cache under ~/.cache/grok-safari stores bookmark and Reading List rows keyed to Bookmarks.plist mtime. search/bookmarks/reading-list hit the cache first. Clear with cache-clear.",
@@ -460,7 +461,7 @@ def cmd_doctor(args):
         print("bookmarks: %s" % d["bookmarkCount"])
         print("reading list: %s" % d["readingListCount"])
         print("cache: %s (fresh=%s)" % (d["cacheDir"], "yes" if d["cacheFresh"] else "no"))
-        print("writes: no  opens URLs: no")
+        print("bookmarks: read-only  opens URLs: no  to-note --force creates a Note")
         for hint in d["hints"][:2]:
             print("hint: %s" % hint)
 
@@ -631,6 +632,152 @@ def cmd_cache_clear(args):
     emit(data, as_json, text)
 
 
+_NOTES = None
+
+
+def load_notes_cli():
+    """The existing grok-notes CLI. Not a second Notes backend."""
+    global _NOTES
+    if _NOTES is None:
+        import importlib.util
+        path = Path(__file__).resolve().parents[2] / "grok-notes" / "lib" / "cli.py"
+        spec = importlib.util.spec_from_file_location("grok_notes_cli", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _NOTES = mod
+    return _NOTES
+
+
+def apply_note(title, body, folder=None):
+    notes = load_notes_cli()
+    payload = {"cmd": "create-note", "title": title, "body": body, "html": None, "folder": folder, "account": None, "parent": None}
+    return notes.call_jxa(payload, 60, False)
+
+
+def select_reading_item(reading, index=None, url=None, title=None):
+    reading = reading or []
+    selectors = sum(1 for v in (index is not None, bool(url), bool(title)) if v)
+    if selectors == 0:
+        return {"ok": False, "error": "missing_target", "message": "Pass --index, --url, or --title for one Reading List item. Nothing was created."}
+    if selectors > 1:
+        return {"ok": False, "error": "bad_request", "message": "Pass only one of --index, --url, or --title. Nothing was created."}
+    if not reading:
+        return {"ok": False, "error": "not_found", "message": "Reading List is empty. Nothing was created."}
+    if index is not None:
+        if index < 1 or index > len(reading):
+            return {"ok": False, "error": "bad_index", "message": "Reading List index must be 1 through %s. Nothing was created." % len(reading)}
+        item = reading[index - 1]
+        return {"ok": True, "item": item, "index": index}
+    if url:
+        hits = [(i, item) for i, item in enumerate(reading, 1) if (item.get("url") or "") == url]
+        if not hits:
+            return {"ok": False, "error": "not_found", "message": "No Reading List item with that exact URL. Nothing was created."}
+        if len(hits) > 1:
+            return {"ok": False, "error": "ambiguous", "message": "More than one Reading List item has that exact URL. Pass --index. Nothing was created."}
+        i, item = hits[0]
+        return {"ok": True, "item": item, "index": i}
+    hits = [(i, item) for i, item in enumerate(reading, 1) if (item.get("title") or "") == title]
+    if not hits:
+        return {"ok": False, "error": "not_found", "message": "No Reading List item with that exact title. Nothing was created."}
+    if len(hits) > 1:
+        return {"ok": False, "error": "ambiguous", "message": "More than one Reading List item has that exact title. Pass --index. Nothing was created."}
+    i, item = hits[0]
+    return {"ok": True, "item": item, "index": i}
+
+
+def print_to_note(data):
+    title = data.get("title") or "(untitled)"
+    url = data.get("url") or ""
+    if data.get("dryRun"):
+        print("dry-run: would create one note")
+    else:
+        print("created note")
+    print("title: %s" % title)
+    print("url: %s" % url)
+    if data.get("folder"):
+        print("folder: %s" % data.get("folder"))
+    if data.get("noteId"):
+        print("id: %s" % data.get("noteId"))
+    if data.get("message"):
+        print(data["message"])
+
+
+def cmd_to_note(args):
+    as_json = args.json
+    index = args.index
+    url = args.url.strip() if isinstance(args.url, str) and args.url.strip() else None
+    title = args.title.strip() if isinstance(args.title, str) and args.title.strip() else None
+    folder = args.folder.strip() if isinstance(args.folder, str) and args.folder.strip() else None
+    chosen = None
+    # Validate selectors before touching the Reading List when args alone are enough.
+    selectors = sum(1 for v in (index is not None, bool(url), bool(title)) if v)
+    if selectors == 0:
+        die(2, "missing_target", "Pass --index, --url, or --title for one Reading List item. Nothing was created.", as_json)
+    if selectors > 1:
+        die(2, "bad_request", "Pass only one of --index, --url, or --title. Nothing was created.", as_json)
+    if index is not None and index < 1:
+        die(2, "bad_index", "Reading List index must be 1 or greater. Nothing was created.", as_json)
+    _bookmarks, reading, from_cache, _meta = load_items(as_json, prefer_cache=True)
+    chosen = select_reading_item(reading, index=index, url=url, title=title)
+    if not chosen.get("ok"):
+        err = chosen.get("error") or "bad_request"
+        code = 2 if err in ("missing_target", "bad_request", "bad_index", "ambiguous") else 1
+        die(code, err, chosen.get("message") or "Nothing was created.", as_json)
+    item = chosen["item"]
+    note_title = item.get("title") or "(untitled)"
+    note_url = item.get("url") or ""
+    if not note_url:
+        die(2, "missing_url", "That Reading List item has no URL. Nothing was created.", as_json)
+    summary = {
+        "ok": True,
+        "tool": TOOL,
+        "version": VERSION,
+        "command": "to-note",
+        "dryRun": not args.force,
+        "applied": False,
+        "index": chosen["index"],
+        "title": note_title,
+        "url": note_url,
+        "folder": folder,
+        "fromCache": from_cache,
+        "modifiesBookmarks": False,
+        "opensUrls": False,
+        "bridge": "grok-notes-create-note",
+        "note": {"title": note_title, "body": note_url, "folder": folder},
+    }
+    if not args.force:
+        summary["message"] = "dry-run: Reading List was only read. Notes.app was not called. Pass --force to create one note through grok-notes create-note."
+        emit(summary, as_json, print_to_note)
+        return
+    created = apply_note(note_title, note_url, folder=folder)
+    if not created.get("ok"):
+        # Surface Notes failure through safari emit shape.
+        fail = {
+            "ok": False,
+            "tool": TOOL,
+            "version": VERSION,
+            "command": "to-note",
+            "error": created.get("error") or "notes_error",
+            "code": 1,
+            "message": created.get("message") or "Notes create-note failed. Nothing was created.",
+            "title": note_title,
+            "url": note_url,
+            "folder": folder,
+            "notes": created,
+        }
+        emit(fail, as_json, print_to_note)
+        return
+    summary["dryRun"] = False
+    summary["applied"] = True
+    summary["noteId"] = created.get("id")
+    summary["noteAccount"] = created.get("account")
+    summary["noteFolder"] = created.get("folder") or created.get("path")
+    summary["created"] = created
+    summary["message"] = "Created one note through grok-notes create-note. Reading List was not changed."
+    emit(summary, as_json, print_to_note)
+
+
+
 def cmd_gaps(args):
     as_json = getattr(args, "json", False)
     data = {"ok": True, "tool": TOOL, "version": VERSION, "gaps": GAPS}
@@ -645,7 +792,7 @@ def cmd_gaps(args):
 def build_parser():
     parser = argparse.ArgumentParser(
         prog=TOOL,
-        description="Read Safari bookmarks and Reading List on any Mac. Does not edit or open them.",
+        description="Read Safari bookmarks and Reading List on any Mac. Does not edit or open them. to-note creates a Note only with --force.",
     )
     parser.add_argument("--version", action="version", version="%s %s" % (TOOL, VERSION))
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -684,6 +831,22 @@ def build_parser():
     cache_clear = sub.add_parser("cache-clear", help="Remove ~/.cache/grok-safari index.")
     add_json(cache_clear)
     cache_clear.set_defaults(func=cmd_cache_clear)
+
+    to_note = sub.add_parser(
+        "to-note",
+        help="Create one Note from one Reading List item (dry-run unless --force).",
+    )
+    add_json(to_note)
+    to_note.add_argument("--index", type=int, help="1-based index into the Reading List (same order as reading-list).")
+    to_note.add_argument("--url", help="Exact Reading List URL.")
+    to_note.add_argument("--title", help="Exact Reading List title.")
+    to_note.add_argument("--folder", help="Optional Notes folder; passed to grok-notes create-note.")
+    to_note.add_argument(
+        "--force",
+        action="store_true",
+        help="Create the note through grok-notes create-note. Without this, Notes is not called.",
+    )
+    to_note.set_defaults(func=cmd_to_note)
 
     gaps = sub.add_parser("gaps")
     add_json(gaps)

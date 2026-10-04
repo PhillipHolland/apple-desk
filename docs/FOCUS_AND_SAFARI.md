@@ -15,8 +15,9 @@ only, not product behavior.
 
 ## grok-safari
 
-- Read-only bookmarks and Reading List from `~/Library/Safari/Bookmarks.plist`.
-- No history, passwords, cookies, edits, or URL opens.
+- Bookmarks and Reading List from `~/Library/Safari/Bookmarks.plist`.
+- No history, passwords, cookies, Reading List edits, or URL opens.
+- `to-note` creates one Note from one Reading List item through `grok-notes create-note`. Dry-run is the default; `--force` is the only apply path. The note title is the item title and the body is the URL.
 - Optional cache: `~/.cache/grok-safari` (SQLite), invalidated by plist mtime.
 - Doctor uses a count-only walk so large bookmark files stay lean.
 
