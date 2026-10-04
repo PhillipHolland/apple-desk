@@ -76,7 +76,7 @@ One failure, one human step, then stop. Do not loop the command.
 | Code | Next human step |
 | --- | --- |
 | 3 | Open System Settings → Privacy & Security → Automation and turn on the named app for Grok Bot and Grok Bot Helper. Do not loop. |
-| 4 | Click the Allow dialog once if it is still on screen. Do not loop. |
+| 4 | If an Allow dialog is still on screen, click it once. If no Allow dialog is up, quit Messages and open it once, then retry that same command once. Do not start a long investigation. Do not loop. |
 | 5 | Open System Settings → Privacy & Security → Full Disk Access, enable Grok Bot and Grok Bot Helper, then quit and reopen Grok Bot. Do not loop. |
 | -1743 | Not authorized to send Apple events. Open the same Automation switch as exit 3 and click Allow once. Do not loop. |
 | -1712 | Quit Messages and open it once, then retry that same command once. Do not loop. |
@@ -85,10 +85,12 @@ One failure, one human step, then stop. Do not loop the command.
 ## Consent and Messages send
 
 - Draft recipient + **exact** text (append the signature line yourself if `grok-desk signature` is set). Wait for an explicit yes. `grok-messages send` without `--force` is a dry-run and prints a confirm token. Only `grok-messages send --force --confirm TOKEN` sends. `--force` alone does not send. The CLI does not append the signature.
+- A dry-run does not script Messages when the chat is already resolved from chat.db. It prints a confirm token and returns.
 - Before an outbound send or react, the draft confirmation must include the output of `grok-focus status`. Focus filters the sender's UI more than the recipient's notifications. Do not block the send. Do not refuse `--force` because Focus is on. Do not activate Messages. Do not call `grok-focus set`.
 - **1:1 send** is Messages **participant** only. No `activate`, no menus. `--to` never targets a group.
 - **Group send** only with `--chat-guid` after the user named that group.
-- Send failures use the exit-code card: **4** stops for one Allow click; **-1712** quits and relaunches Messages once, then one retry, then stop.
+- Send failures use the exit-code card. Exit **4** with an Allow dialog: click Allow once. Exit **4** with no dialog: quit Messages and open it once, then retry that same command once. Do not dig first. `--unstick-once` is off unless it was passed; then a timeout quits Messages, opens it once, and retries that same send once. It does not loop. An existing 1:1 is `sent: true` only after a read-only chat.db check sees a new outgoing row of that text. Otherwise the error is `send_unconfirmed` and `sent` is false.
+- When send worked yesterday and hangs today, use the five-minute checklist in `docs/MESSAGES_SEND_HANG.md` before any long dig: quit and relaunch Messages, doctor, one dry-run, then one approved real send.
 - Do not write `chat.db`. Read-only confirm of one outgoing row is ok after an approved send.
 - `mark-read` exits `screen_locked` before activate when locked. `react --force` does not pre-check the lock and does not activate Messages. Vendor `imsg react` activates Messages itself and exits -2700 if Messages is not in front, so a locked screen still cannot finish a tapback. imsg tapback is not a fallback: it needs SIP disabled and imsg launch, which Apple Desk will not do.
 - Deletes and other writes need `--force` and an id the user named. Notes create/edit/append, calendar create/update, reminders add and done, and contacts create/update stay a dry-run unless `--force`.

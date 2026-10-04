@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import sqlite3
 import hashlib
 import hmac
 import json
@@ -16,7 +17,7 @@ from pathlib import Path
 
 import db
 
-VERSION = "0.2.13"
+VERSION = "0.2.14"
 LIB = Path(__file__).resolve().parent / "messages.js"
 ALLOWLIST = Path.home() / ".config" / "grok-messages" / "allowlist"
 MAX_TEXT = 4000
@@ -57,7 +58,9 @@ def die(code, error, message, as_json):
             print("If a dialog is still on screen, click it once. Do not retry in a loop.", file=sys.stderr)
         if error == "automation_timeout":
             print("Timed out. That is a hang or a dialog still on screen, not proof that access was denied.", file=sys.stderr)
-            print("If a dialog is up, answer it once. If none is up, Messages may be busy. Do not retry in a loop.", file=sys.stderr)
+            print("If an Allow dialog is still on screen, click it once.", file=sys.stderr)
+            print("If no Allow dialog is up, quit Messages and open it once, then retry that same command once.", file=sys.stderr)
+            print("Do not start a long investigation. Do not retry in a loop.", file=sys.stderr)
         if error == "needs_full_disk_access":
             print("System Settings → Privacy & Security → Full Disk Access → Grok Bot and Grok Bot Helper on.", file=sys.stderr)
             print("Quit and reopen Grok Bot after changing that. Send does not need Full Disk Access.", file=sys.stderr)
@@ -67,20 +70,51 @@ def die(code, error, message, as_json):
     raise SystemExit(code)
 
 
-def call_jxa(payload, timeout, as_json):
-    proc = subprocess.run(
+TIMEOUT_NEXT = (
+    "If an Allow dialog is still on screen, click it once. "
+    "If no Allow dialog is up, quit Messages and open it once, then retry that same command once. "
+    "Do not start a long investigation. Do not retry in a loop."
+)
+
+
+def _timeout_message(timeout) -> str:
+    return f"Timed out after {timeout}s waiting for Messages. This is a hang or a dialog, not an access denial. {TIMEOUT_NEXT}"
+
+
+def _jxa_timed_out(proc) -> bool:
+    return proc.returncode in (-14, 142) or "Alarm clock" in (proc.stderr or "")
+
+
+def run_jxa(payload, timeout):
+    """One osascript call. Send retries go through call_send_jxa, not this helper."""
+    return subprocess.run(
         ["perl", "-e", "alarm shift @ARGV; exec @ARGV", str(timeout), "osascript", "-l", "JavaScript", str(LIB), "--", json.dumps(payload)],
         capture_output=True,
         text=True,
     )
-    if proc.returncode in (-14, 142) or "Alarm clock" in (proc.stderr or ""):
-        die(4, "automation_timeout", f"Timed out after {timeout}s waiting for Messages. This is a hang or a dialog, not an access denial. Do not retry in a loop.", as_json)
+
+
+def _jxa_timeout_message(proc, timeout):
+    """Message when this result is automation_timeout, else None."""
+    if _jxa_timed_out(proc):
+        return _timeout_message(timeout)
+    if proc.returncode != 0:
+        blob = (proc.stderr or proc.stdout or "osascript failed").strip()
+        if "-1712" in blob or "timed out" in blob.lower():
+            return blob + " " + TIMEOUT_NEXT
+    return None
+
+
+def call_jxa(payload, timeout, as_json):
+    proc = run_jxa(payload, timeout)
+    if _jxa_timed_out(proc):
+        die(4, "automation_timeout", _timeout_message(timeout), as_json)
     if proc.returncode != 0:
         blob = (proc.stderr or proc.stdout or "osascript failed").strip()
         if "-1743" in blob or "Not authorized to send Apple events" in blob:
             die(3, "automation_denied", blob, as_json)
         if "-1712" in blob or "timed out" in blob.lower():
-            die(4, "automation_timeout", blob, as_json)
+            die(4, "automation_timeout", blob + " " + TIMEOUT_NEXT, as_json)
         die(1, "messages_error", blob, as_json)
     raw = (proc.stdout or "").strip()
     if not raw:
@@ -93,12 +127,60 @@ def call_jxa(payload, timeout, as_json):
 
 
 # The --to 1:1 send path is participant-only: never activate Messages or drive menus.
-# Screen lock does not block this scripting path; -1712/exit 4 gets one unstick/relaunch and one send.
+# Screen lock does not block this scripting path. Quit/relaunch happens only when
+# the send was started with --unstick-once, and then only once.
+_send_unstick_once = False
+
+
+def relaunch_messages():
+    """Quit Messages and open it once. Only a flagged send timeout calls this."""
+    subprocess.run(
+        ["osascript", "-e", 'tell application "Messages" to quit'],
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    time.sleep(1)
+    subprocess.run(
+        ["open", "-a", "Messages"],
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+
+
 def call_send_jxa(payload, timeout, as_json):
-    """Send through Messages scripting only; never activate or drive UI."""
+    """Send through Messages scripting only; never activate or drive UI.
+
+    With --unstick-once, one automation_timeout quits and relaunches Messages,
+    then retries this same payload once. Without the flag, a timeout exits 4
+    and does not touch Messages. Never loops.
+    """
     if payload.get("op") not in {"send_participant", "send_chat"}:
         die(2, "bad_request", "Internal send route is not a supported Messages send operation. Nothing was sent.", as_json)
-    return call_jxa(payload, timeout, as_json)
+    used_unstick = False
+    while True:
+        proc = run_jxa(payload, timeout)
+        timed = _jxa_timeout_message(proc, timeout)
+        if timed is not None:
+            if _send_unstick_once and not used_unstick:
+                used_unstick = True
+                relaunch_messages()
+                continue
+            die(4, "automation_timeout", timed, as_json)
+        if proc.returncode != 0:
+            blob = (proc.stderr or proc.stdout or "osascript failed").strip()
+            if "-1743" in blob or "Not authorized to send Apple events" in blob:
+                die(3, "automation_denied", blob, as_json)
+            die(1, "messages_error", blob, as_json)
+        raw = (proc.stdout or "").strip()
+        if not raw:
+            die(1, "messages_error", "Messages returned an empty response", as_json)
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            die(1, "messages_error", "Messages returned non-JSON: " + raw[:200], as_json)
+        return data
 
 
 def emit(data, as_json, text_fn):
@@ -511,7 +593,42 @@ def take_confirm(token: str, binding: str, text: str) -> str | None:
     return None
 
 
+def receipt_wait_seconds() -> float:
+    raw = os.environ.get("GROK_MESSAGES_RECEIPT_WAIT", "3")
+    try:
+        value = float(raw)
+    except ValueError:
+        value = 3.0
+    if value < 0:
+        return 0.0
+    if value > 10:
+        return 10.0
+    return value
+
+
+def wait_for_outgoing(chat, text, after_id, as_json) -> bool:
+    """Read chat.db until a newer outgoing row of this exact text appears. No writes."""
+    deadline = time.monotonic() + receipt_wait_seconds()
+    while True:
+        con = open_db(as_json)
+        try:
+            try:
+                found = db.outgoing_text_after(con, chat["rowid"], text, after_id)
+            except sqlite3.Error:
+                found = False
+        finally:
+            con.close()
+        if found:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.25)
+
+
 def cmd_send(args):
+    global _send_unstick_once
+    # Quit/relaunch only on a real send that asked for one retry. Dry-run never does.
+    _send_unstick_once = bool(getattr(args, "unstick_once", False)) and bool(args.force) and not bool(args.dry_run)
     as_json = args.json
     text = args.text if args.text is not None else ""
     to = (args.to or "").strip()
@@ -687,6 +804,17 @@ def cmd_send(args):
     if reason:
         die(2, reason, CONFIRM_MESSAGES[reason], as_json)
 
+    before_id = 0
+    if route == "participant":
+        con = open_db(as_json)
+        try:
+            try:
+                before_id = db.outgoing_text_max_id(con, chat["rowid"], text)
+            except sqlite3.Error:
+                before_id = 0
+        finally:
+            con.close()
+
     if route == "new_participant":
         result = call_send_jxa({
             "op": "send_participant",
@@ -707,6 +835,13 @@ def cmd_send(args):
         result = call_send_jxa({"op": "send_chat", "chatId": chat["guid"], "text": text}, 45, as_json)
     if not result.get("ok"):
         emit(result, as_json, lambda d: None)
+    if route == "participant" and not wait_for_outgoing(chat, text, before_id, as_json):
+        emit({
+            "ok": False,
+            "sent": False,
+            "error": "send_unconfirmed",
+            "message": "Messages returned from the send script, but chat.db has no new outgoing row of that text. Nothing further was sent.",
+        }, as_json, lambda d: None)
     data = {
         "ok": True,
         "sent": True,
@@ -716,6 +851,8 @@ def cmd_send(args):
         "textLength": len(text),
         "group": bool(result.get("group")) if route == "chat" else False,
     }
+    if route == "participant":
+        data["receipt"] = "chat.db"
     if route in {"participant", "new_participant"}:
         data["handle"] = result.get("handle") or handle
     if route == "new_participant":
@@ -1405,7 +1542,9 @@ def build_parser():
         "send",
         help="Send plain text. --to is 1:1 only. Groups need --chat-guid.",
         description=(
-            "Send plain text through Messages.app's non-UI scripting path. It never activates Messages, clicks menus, waits for a frontmost window, or uses mark-read's screen_locked guard. The --to 1:1 path is participant-only; screen lock does not block send. On AppleEvent -1712 / exit 4, quit and relaunch Messages once, make one send attempt, then stop. "
+            "Send plain text through Messages.app's non-UI scripting path. It never activates Messages, clicks menus, waits for a frontmost window, or uses mark-read's screen_locked guard. The --to 1:1 path is participant-only; screen lock does not block send. "
+            "A timeout exits 4 and does not quit Messages unless --unstick-once was passed. That flag quits Messages, opens it once, and retries the same send once. It does not loop. "
+            "An existing 1:1 is not reported sent until chat.db shows a new outgoing row of that text. "
             "Send without --force is a dry-run and prints a confirm token. --force alone does not send. "
             "The only send is --force --confirm TOKEN. The token matches the recipient and the exact text and expires in 10 minutes. "
             "--dry-run never sends and never creates a chat, even with --force. "
@@ -1430,7 +1569,8 @@ def build_parser():
     send.add_argument("--service", choices=("iMessage", "SMS", "RCS"), help="Limit --to to one service when several 1:1 chats match.")
     send.add_argument("--force", action="store_true", help="Send only together with --confirm TOKEN. --force alone does not send.")
     send.add_argument("--confirm", help="Confirm token printed by a dry-run. Required with --force. Bound to this recipient and the exact text. Expires in 10 minutes.")
-    send.add_argument("--dry-run", action="store_true", help="Resolve the target and print a confirm token. Never sends, even with --force.")
+    send.add_argument("--dry-run", action="store_true", help="Resolve the target and print a confirm token. Never sends, even with --force. When the chat is already in chat.db, Messages is not scripted.")
+    send.add_argument("--unstick-once", action="store_true", help="On automation_timeout, quit Messages, open it once, and retry this send once. Off by default. Does not loop and does not run on a dry-run.")
     send.set_defaults(func=cmd_send)
 
     attachments = sub.add_parser(

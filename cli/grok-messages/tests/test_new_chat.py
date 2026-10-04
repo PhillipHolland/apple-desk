@@ -8,6 +8,7 @@ import os
 import sqlite3
 import sys
 import tempfile
+import uuid
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
@@ -29,7 +30,9 @@ BODY = "fixture body"
 
 
 def memory_db(rows):
-    con = sqlite3.connect(":memory:")
+    name = "gm" + uuid.uuid4().hex
+    uri = f"file:{name}?mode=memory&cache=shared"
+    con = sqlite3.connect(uri, uri=True)
     con.row_factory = sqlite3.Row
     con.executescript(
         """
@@ -55,6 +58,12 @@ def memory_db(rows):
             message_id integer,
             message_date integer
         );
+        create table message (
+            ROWID integer primary key,
+            text text,
+            is_from_me integer,
+            is_read integer
+        );
         """
     )
     for row in rows:
@@ -79,7 +88,8 @@ def memory_db(rows):
             "insert into chat_handle_join (chat_id, handle_id) values (?, ?)",
             (row["rowid"], row["rowid"]),
         )
-    return con
+    con.commit()
+    return uri, con
 
 
 EMPTY = []
@@ -110,9 +120,13 @@ class Guard:
     def install(self, rows):
         guard = self
 
+        guard.uri, guard.keep = memory_db(rows)
+
         def open_db(_as_json):
             guard.opened += 1
-            return memory_db(rows)
+            con = sqlite3.connect(guard.uri, uri=True)
+            con.row_factory = sqlite3.Row
+            return con
 
         def call_jxa(payload, timeout, as_json):
             guard.jxa.append(payload)
@@ -132,6 +146,17 @@ class Guard:
                     "route": "new_participant",
                     "handle": payload.get("handle"),
                 }
+            con = sqlite3.connect(guard.uri, uri=True)
+            cur = con.execute(
+                "insert into message (text, is_from_me, is_read) values (?, 1, 1)",
+                (payload.get("text"),),
+            )
+            con.execute(
+                "insert into chat_message_join (chat_id, message_id, message_date) values (?, ?, 1)",
+                (1, cur.lastrowid),
+            )
+            con.commit()
+            con.close()
             return {
                 "ok": True,
                 "sent": True,
@@ -170,7 +195,7 @@ def main():
             failures.append(name)
             print("FAIL", name)
 
-    check("version is 0.2.13", cli.VERSION == "0.2.13")
+    check("version is 0.2.14", cli.VERSION == "0.2.14")
     check("email handle", db.is_new_chat_handle(HANDLE))
     check("phone handle", db.is_new_chat_handle(PHONE))
     check("display name is not a handle", not db.is_new_chat_handle(GROUP_NAME))

@@ -55,7 +55,9 @@ One failure, one human step, then stop. Do not loop the command.
 | Code | Next human step |
 | --- | --- |
 | 3 | Open System Settings → Privacy & Security → Automation and turn on the named app for Grok Bot and Grok Bot Helper. Do not loop. |
-| 4 | Click the Allow dialog once if it is still on screen. Do not loop. |
+- Send failures use the exit-code card. Exit **4** with an Allow dialog: click Allow once. Exit **4** with no dialog: quit Messages and open it once, then retry that same command once. Do not dig first. `--unstick-once` is off unless it was passed; then a timeout quits Messages, opens it once, and retries that same send once. It does not loop. An existing 1:1 is `sent: true` only after a read-only chat.db check sees a new outgoing row of that text. Otherwise the error is `send_unconfirmed` and `sent` is false.
+- When send worked yesterday and hangs today, use the five-minute checklist in `docs/MESSAGES_SEND_HANG.md` before any long dig: quit and relaunch Messages, doctor, one dry-run, then one approved real send.
+
 | 5 | Open System Settings → Privacy & Security → Full Disk Access, enable Grok Bot and Grok Bot Helper, then quit and reopen Grok Bot. Do not loop. |
 | -1743 | Not authorized to send Apple events. Open the same Automation switch as exit 3 and click Allow once. Do not loop. |
 | -1712 | Quit Messages and open it once, then retry that same command once. Do not loop. |
@@ -65,7 +67,7 @@ One failure, one human step, then stop. Do not loop the command.
 
 - 1:1 send is Messages **participant** only. No `activate`, no menus.
 - Draft recipient + exact text; wait for explicit yes; then `grok-messages send --force`. The CLI does **not** append the signature; the bot reads `grok-desk signature` and appends the line the user set.
-- Send failures use the exit-code card: **4** stops for one Allow click; **-1712** quits and relaunches Messages once, then one send, then stop.
+- Send failures use the exit-code card. Exit **4** with an Allow dialog: click Allow once. Exit **4** with no dialog: quit Messages and open it once, then retry that same command once. Do not dig first. `--unstick-once` is the only automatic quit and relaunch, and it retries once. An existing 1:1 is not claimed sent until chat.db shows the new outgoing row (`send_unconfirmed` otherwise).
 - Do not write `chat.db`. Read-only confirm of one outgoing row is ok after an approved send.
 - Group send only with `--chat-guid` after the user named that group.
 - `mark-read` is the only UI path; it exits `screen_locked` before activate when the screen is locked.

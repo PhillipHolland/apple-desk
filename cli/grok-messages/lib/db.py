@@ -491,6 +491,37 @@ def _prefer(items: list[dict]) -> tuple[dict | None, list[dict]]:
     return None, tied
 
 
+def outgoing_text_max_id(con, chat_rowid: int, text: str) -> int:
+    """Highest message id of an outgoing row with this exact text. Read-only. 0 if none."""
+    row = con.execute(
+        """
+        select max(m.ROWID)
+        from message m
+        join chat_message_join cm on cm.message_id = m.ROWID
+        where cm.chat_id = ? and m.is_from_me = 1 and m.text = ?
+        """,
+        (chat_rowid, text),
+    ).fetchone()
+    if not row or row[0] is None:
+        return 0
+    return int(row[0])
+
+
+def outgoing_text_after(con, chat_rowid: int, text: str, after_id: int) -> bool:
+    """True when a newer outgoing row has this exact text. Read-only."""
+    row = con.execute(
+        """
+        select 1
+        from message m
+        join chat_message_join cm on cm.message_id = m.ROWID
+        where cm.chat_id = ? and m.is_from_me = 1 and m.text = ? and m.ROWID > ?
+        limit 1
+        """,
+        (chat_rowid, text, after_id),
+    ).fetchone()
+    return row is not None
+
+
 def recent(con, chat: dict, limit: int) -> list[dict]:
     sql = """
     select
