@@ -32,6 +32,7 @@ function dispatch(app, payload) {
   if (op === "create") return createEvent(app, payload);
   if (op === "update") return updateEvent(app, payload);
   if (op === "delete") return deleteEvent(app, payload);
+  if (op === "alarm") return addDisplayAlarm(app, payload);
   return { ok: false, error: "bad_request", message: "Unknown op " + op };
 }
 
@@ -302,6 +303,44 @@ function updateEvent(app, payload) {
     start: formatLocal(ev.startDate()),
     end: formatLocal(ev.endDate()),
     calendar: empty(found.calendar.name())
+  };
+}
+
+
+function addDisplayAlarm(app, payload) {
+  // Display alarm is an element on event in Calendar's scripting definition.
+  // trigger interval is minutes: negative is before the start. Callers pass minutesBefore >= 0.
+  if (payload.force !== true) {
+    return { ok: false, error: "needs_force", message: "alarm refuses unless force is true. Calendar was not changed." };
+  }
+  if (!payload.uid) return { ok: false, error: "missing_target", message: "alarm needs --uid. Nothing was changed." };
+  var minutes = payload.minutesBefore;
+  if (typeof minutes !== "number" || !isFinite(minutes) || Math.floor(minutes) !== minutes || minutes < 0 || minutes > 40320) {
+    return { ok: false, error: "bad_request", message: "minutesBefore must be an integer from 0 through 40320. Nothing was changed." };
+  }
+  var found = findEvent(app, payload);
+  if (!found.ok) return found;
+  if (!safe(function () { return found.calendar.writable(); }, false)) {
+    return { ok: false, error: "read_only_calendar", message: found.calendar.name() + " is not writable. Nothing was changed." };
+  }
+  var interval = -minutes;
+  try {
+    var alarm = app.DisplayAlarm({ triggerInterval: interval });
+    found.event.displayAlarms.push(alarm);
+  } catch (eAlarm) {
+    return { ok: false, error: "calendar_error", message: "Calendar did not add a display alarm: " + eAlarm };
+  }
+  var uid = empty(found.event.uid()) || String(payload.uid);
+  var calendarName = empty(found.calendar.name());
+  return {
+    ok: true,
+    applied: true,
+    dryRun: false,
+    op: "alarm",
+    uid: uid,
+    minutesBefore: minutes,
+    triggerInterval: interval,
+    calendar: calendarName
   };
 }
 

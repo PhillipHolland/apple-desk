@@ -9,7 +9,7 @@ import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-VERSION = "0.1.5"
+VERSION = "0.1.6"
 LIB = Path(__file__).resolve().parent / "calendar.js"
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import cache as calcache  # noqa: E402
@@ -25,10 +25,11 @@ def wake_calendar():
 
 GAPS = [
     "Direct EventKit is not used. A command-line binary has no NSCalendarsUsageDescription, so macOS often will not show the Calendars privacy prompt for the binary. This CLI asks Calendar.app over Apple Events. The usual grant is Automation (Grok Bot or Grok Bot Helper → Calendar). If Calendar still refuses the data, also enable Grok Bot and Grok Bot Helper under Privacy & Security → Calendars, then quit and reopen Grok Bot.",
-    "Reads are the default. create, update, and delete are the only mutations. delete removes one event and refuses without --force. There is no delete-all.",
-    "show returns attendeeCount and alarmCount only. It does not list attendees, send invites, RSVP, or propose a new time. It does not create alarms, set travel time, or change availability.",
+    "Reads are the default. create and update write when you run them. delete and alarm refuse without --force. There is no delete-all and no command that removes every alarm.",
+    "show returns attendeeCount and alarmCount only. It does not list attendee or RSVP names, participation status, or email addresses. Those names stay omitted unless you explicitly ask, and this CLI has no command that prints them. It does not send invites or propose a new time. It does not set travel time or change availability.",
+    "alarm --uid --minutes N adds one display alarm N minutes before the start (Calendar's trigger interval, stored negative). Without --force it is a dry-run and does not call Calendar.app. Sound, mail, and open-file alarms are not created.",
     "Recurrence on show is a small object (summary, and frequency or until when Calendar exposes them). This CLI does not create or edit a series, and it does not target one occurrence versus the whole series.",
-    "Events cannot be moved between calendars. update changes fields on the event's current calendar only.",
+    "Events cannot be moved between calendars. Calendar's scripting definition has no calendar property on an event, and the event does not respond to move. This CLI does not copy an event and delete the original, and it does not use EventKit. update changes fields on the event's current calendar only.",
     "Subscribed and read-only calendars (holidays, birthdays, some shared calendars) can be listed but not written.",
     "list and search use the local index (~/.cache/grok-calendar) when present. Pass --live to read Calendar.app. Pass --calendar-id when two calendars share a name. A calendar with more than 800 overlapping events in the window is refused.",
     "show, update, and delete look up one uid by scanning calendars. That can be slow on large accounts.",
@@ -201,7 +202,7 @@ def print_doctor(data):
     print(f"grok-calendar {VERSION}  ok")
     print("backend: Calendar.app JXA")
     print(f"automation: {data.get('automation')}")
-    print("writes: off unless you run create, update, or delete --force")
+    print("writes: create and update are live; delete and alarm need --force")
     print(f"Calendar {app.get('version')} ({app.get('id')})")
     print(f"calendars: {data.get('calendars')}   writable: {data.get('writableCalendars') if data.get('writableCalendars') is not None else '(see calendars)'}")
 
@@ -257,6 +258,16 @@ def print_write(data):
         return
     verb = "created" if data.get("created") else "updated"
     print(f"{verb} {data.get('title')}  {clock(data.get('start'))}  {data.get('uid')}  · {data.get('calendar')}")
+
+
+def print_alarm(data):
+    when = f"{data.get('minutesBefore')} minutes before"
+    if data.get("dryRun"):
+        print(f"dry-run alarm {data.get('uid')} {when} (Calendar not called)")
+        return
+    calendar = data.get("calendar") or ""
+    suffix = f"  · {calendar}" if calendar else ""
+    print(f"alarm {data.get('uid')} {when}{suffix}")
 
 
 def add_json(sp):
@@ -377,6 +388,13 @@ def build_parser():
     sp = sub.add_parser("delete", help="Delete one event by uid")
     sp.add_argument("--uid", required=True)
     sp.add_argument("--force", action="store_true")
+    sp.add_argument("--dry-run", action="store_true", help="Do not call Calendar.app")
+    add_json(sp)
+
+    sp = sub.add_parser("alarm", help="Add one display alarm. Dry-run unless --force. Does not list attendees.")
+    sp.add_argument("--uid", required=True)
+    sp.add_argument("--minutes", type=int, required=True, help="minutes before the start (0..40320)")
+    sp.add_argument("--force", action="store_true", help="Apply in Calendar.app. Without this, Calendar is not called.")
     sp.add_argument("--dry-run", action="store_true", help="Do not call Calendar.app")
     add_json(sp)
 
@@ -605,6 +623,33 @@ def main(argv=None):
             die(2, "needs_force", "delete refuses without --force. This removes one event by --uid. There is no mass delete and no delete-all.", as_json)
         data = call_jxa({"op": "delete", "uid": args.uid, "force": True}, LONG_TIMEOUT, as_json)
         emit(data, as_json, print_write)
+        return
+    if args.cmd == "alarm":
+        uid = (args.uid or "").strip()
+        if not uid:
+            die(2, "missing_target", "alarm needs --uid. Calendar was not called.", as_json)
+        minutes = args.minutes
+        if isinstance(minutes, bool) or not isinstance(minutes, int) or minutes < 0 or minutes > 40320:
+            die(2, "bad_request", "alarm --minutes must be an integer from 0 through 40320 (minutes before the start). Calendar was not called.", as_json)
+        if args.dry_run or not args.force:
+            data = {
+                "ok": True,
+                "dryRun": True,
+                "applied": False,
+                "op": "alarm",
+                "uid": uid,
+                "minutesBefore": minutes,
+                "message": "dry-run: Calendar.app was not called. Pass --force to apply.",
+            }
+            emit(data, as_json, print_alarm)
+            return
+        data = call_jxa({
+            "op": "alarm",
+            "uid": uid,
+            "minutesBefore": minutes,
+            "force": True,
+        }, LONG_TIMEOUT, as_json)
+        emit(data, as_json, print_alarm)
         return
     die(2, "bad_request", "Unknown command", as_json)
 

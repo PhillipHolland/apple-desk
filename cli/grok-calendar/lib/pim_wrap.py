@@ -203,6 +203,9 @@ def main():
     cmd, pos, flags = parse(argv)
     if cmd in {None, "gaps"}:
         raise SystemExit(FALLBACK)
+    # alarm stays on the in-house JXA path. Do not forward it to calendar-cli (EventKit).
+    if cmd == "alarm":
+        raise SystemExit(FALLBACK)
     bin_path = binary()
     as_json = wants_json(flags)
     if not bin_path:
