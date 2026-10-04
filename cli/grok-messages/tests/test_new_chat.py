@@ -105,7 +105,6 @@ class Guard:
     def __init__(self):
         self.jxa = []
         self.send = []
-        self.existing = []
         self.opened = 0
 
     def install(self, rows):
@@ -141,19 +140,9 @@ class Guard:
                 "group": False,
             }
 
-        def call_existing_send(chat, text, as_json):
-            guard.existing.append({"guid": chat.get("guid"), "text": text, "rowid": chat.get("rowid")})
-            return {
-                "ok": True,
-                "sent": True,
-                "confirmedBy": "chat.db",
-                "group": False,
-            }
-
         cli.open_db = open_db
         cli.call_jxa = call_jxa
         cli.call_send_jxa = call_send_jxa
-        cli.call_existing_send = call_existing_send
         cli.ALLOWLIST = Path(tempfile.gettempdir()) / "grok-messages-allowlist-absent-fixture"
 
 
@@ -181,7 +170,7 @@ def main():
             failures.append(name)
             print("FAIL", name)
 
-    check("version is 0.2.14", cli.VERSION == "0.2.14")
+    check("version is 0.2.13", cli.VERSION == "0.2.13")
     check("email handle", db.is_new_chat_handle(HANDLE))
     check("phone handle", db.is_new_chat_handle(PHONE))
     check("display name is not a handle", not db.is_new_chat_handle(GROUP_NAME))
@@ -238,17 +227,16 @@ def main():
     code, out, err, guard = run(["send", "--to", KEPT, "--text", BODY, "--dry-run", "--json"], [KEPT_CHAT])
     data = json.loads(out)
     check("existing chat is not a create", code == 0 and data.get("wouldCreate") is False and data.get("route") == "participant")
-    check("existing dry-run does not send", guard.send == [] and guard.existing == [] and data.get("sent") is False)
+    check("existing dry-run does not send", guard.send == [] and data.get("sent") is False)
     check("existing dry-run does not call Messages", guard.jxa == [])
 
     code, out, err, guard = run(["send", "--to", KEPT, "--text", BODY, "--json"], [KEPT_CHAT])
     token = json.loads(out)["confirmToken"]
     code, out, err, guard = run(["send", "--to", KEPT, "--text", BODY, "--force", "--confirm", token, "--json"], [KEPT_CHAT])
     data = json.loads(out)
-    sent = guard.existing[0] if guard.existing else {}
-    check("existing force reuses the chat", code == 0 and data.get("sent") is True and guard.send == [])
-    check("existing force keeps the guid", sent.get("guid") == KEPT_CHAT["guid"] and sent.get("text") == BODY)
-    check("existing force does not wait on Messages.send", guard.send == [] and guard.jxa == [])
+    payload = guard.send[0] if guard.send else {}
+    check("existing force reuses the chat", code == 0 and data.get("sent") is True and "createIfMissing" not in payload)
+    check("existing force keeps the guid", payload.get("directChatId") == KEPT_CHAT["guid"] and payload.get("op") == "send_participant")
 
     code, out, err, guard = run(["send", "--to", GROUP_NAME, "--text", BODY, "--dry-run", "--json"], [GROUP_CHAT])
     check("group name stays refused", code == 2 and json.loads(out)["error"] == "refusing_group" and guard.send == [] and guard.jxa == [])
