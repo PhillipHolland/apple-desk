@@ -2,7 +2,7 @@
 
 Apple Mail CLI for this Mac. Talks to Mail.app with `osascript -l JavaScript` (JXA). It does not read `~/Library/Mail` and it does not call a cloud mail API.
 
-**Prefer the Gmail connector** for `phillip.b.holland@gmail.com` cloud mail. Use `grok-mail` only when you need Mail.app on this Mac.
+**Prefer the Gmail connector** for cloud mail. Use `grok-mail` only when you need Mail.app on this Mac.
 
 **Status (0.1.1):** Code hardened AFK. Apple Event calls hard-timeout at 20–25s (exit 4 `automation_timeout`). Doctor timed out 2026-10-03 — do not retry doctor in a loop while AFK. After you click Allow (System Settings → Privacy & Security → Automation → Grok Bot / Grok Bot Helper → Mail), run `doctor` once.
 
