@@ -13,7 +13,7 @@ LIB = Path(__file__).resolve().parent / "mail.js"
 TOOL = "grok-mail"
 
 GAPS = [
-    "Prefer the Gmail connector for phillip.b.holland@gmail.com cloud mail. grok-mail is only for Mail.app on this Mac.",
+    "Prefer the Gmail connector for cloud mail. grok-mail is only for Mail.app on this Mac.",
     "Direct MailCore / the files under ~/Library/Mail are not used. This CLI asks Mail.app over Apple Events. The grant is Automation (Grok Bot / Grok Bot Helper → Mail). A separate compose entitlement can still block draft --force even after reads work.",
     "Send is not implemented. There is no send subcommand and the JXA never calls Mail's send command. draft --force only saves an unsent outgoing message (intended for Drafts) with the window hidden. Agents must not add a send path without an explicit user yes.",
     "draft without --force does not talk to Mail at all. It exits needs_force and creates nothing. draft --dry-run also skips Mail.",
