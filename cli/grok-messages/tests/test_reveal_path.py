@@ -112,7 +112,7 @@ def main():
             failures.append(name)
             print("FAIL", name)
 
-    check("version is 0.2.11", cli.VERSION == "0.2.11")
+    check("version is 0.2.12", cli.VERSION == "0.2.12")
     check("warning names a private file", "local private file" in cli.PATH_WARNING)
     check("default gaps mention the flag", "--reveal-path" in " ".join(cli.GAPS))
 

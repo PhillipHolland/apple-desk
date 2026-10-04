@@ -8,7 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-VERSION = "0.1.3"
+VERSION = "0.1.4"
 LIB = Path(__file__).resolve().parent / "contacts.js"
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import cache as contactcache  # noqa: E402
@@ -165,7 +165,7 @@ def print_doctor(data):
     print(f"grok-contacts {VERSION}  ok  [{source}]")
     print(f"backend: {data.get('backend') or 'contacts-app-jxa'}")
     print(f"automation: {data.get('automation')}")
-    print("writes: enabled (delete still needs --force)")
+    print("writes: create and update are dry-run unless --force; delete needs --force")
     if app:
         print(f"Contacts {app.get('version')} ({app.get('id')})")
     print(f"people: {data.get('people')}   groups: {data.get('groups')}")
@@ -348,7 +348,7 @@ def build_parser():
     sp.add_argument("--limit", type=int, default=200)
     add_json(sp)
 
-    sp = sub.add_parser("create", help="Create one contact")
+    sp = sub.add_parser("create", help="Create one contact. Dry-run unless --force.")
     sp.add_argument("--first")
     sp.add_argument("--last")
     sp.add_argument("--middle")
@@ -362,9 +362,11 @@ def build_parser():
     sp.add_argument("--email", action="append", help="label:address (default label home)")
     sp.add_argument("--url", action="append", help="label:url")
     sp.add_argument("--group", action="append")
+    sp.add_argument("--force", action="store_true", help="Apply in Contacts.app. Without this, Contacts is not called.")
+    sp.add_argument("--dry-run", action="store_true", help="Do not call Contacts.app. Wins over --force.")
     add_json(sp)
 
-    sp = sub.add_parser("update", help="Change one contact by id")
+    sp = sub.add_parser("update", help="Change one contact by id. Dry-run unless --force.")
     sp.add_argument("--id", required=True)
     sp.add_argument("--first")
     sp.add_argument("--last")
@@ -381,6 +383,8 @@ def build_parser():
     sp.add_argument("--add-url", action="append")
     sp.add_argument("--remove-id", action="append", help="phone, email, url, or address id")
     sp.add_argument("--group", action="append", help="add to this group")
+    sp.add_argument("--force", action="store_true", help="Apply in Contacts.app. Without this, Contacts is not called.")
+    sp.add_argument("--dry-run", action="store_true", help="Do not call Contacts.app. Wins over --force.")
     add_json(sp)
 
     sp = sub.add_parser("delete", help="Delete one contact by id")
@@ -519,6 +523,19 @@ def main(argv=None):
     if args.cmd == "create":
         if not (args.first or args.last or args.org):
             die(2, "missing_name", "create needs --first, --last, or --org.", as_json)
+        if args.dry_run or not args.force:
+            data = {
+                "ok": True,
+                "dryRun": True,
+                "applied": False,
+                "op": "create",
+                "first": args.first,
+                "last": args.last,
+                "org": args.org,
+                "message": "dry-run: Contacts.app was not called. Pass --force to apply.",
+            }
+            emit(data, as_json, lambda d: print(d["message"]))
+            return
         payload = {
             "op": "create",
             "first": args.first,
@@ -534,6 +551,7 @@ def main(argv=None):
             "emails": parse_labeled(args.email, "home"),
             "urls": parse_labeled(args.url, "homepage"),
             "groups": args.group or [],
+            "force": True,
         }
         data = call_jxa(payload, timeout, as_json)
         emit(data, as_json, print_write)
@@ -546,6 +564,17 @@ def main(argv=None):
             company = True
         elif args.not_company:
             company = False
+        if args.dry_run or not args.force:
+            data = {
+                "ok": True,
+                "dryRun": True,
+                "applied": False,
+                "op": "update",
+                "id": args.id,
+                "message": "dry-run: Contacts.app was not called. Pass --force to apply.",
+            }
+            emit(data, as_json, lambda d: print(d["message"]))
+            return
         payload = {
             "op": "update",
             "id": args.id,
@@ -563,6 +592,7 @@ def main(argv=None):
             "urls": parse_labeled(args.add_url, "homepage"),
             "removeIds": args.remove_id or [],
             "groups": args.group or [],
+            "force": True,
         }
         data = call_jxa(payload, timeout, as_json)
         emit(data, as_json, print_write)

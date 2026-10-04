@@ -16,7 +16,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-VERSION = "0.1.2"
+VERSION = "0.1.3"
 TOOL = "grok-safari"
 MAX_LIMIT = 50
 DEFAULT_LIMIT = 20
@@ -650,7 +650,7 @@ def load_notes_cli():
 
 def apply_note(title, body, folder=None):
     notes = load_notes_cli()
-    payload = {"cmd": "create-note", "title": title, "body": body, "html": None, "folder": folder, "account": None, "parent": None}
+    payload = {"cmd": "create-note", "title": title, "body": body, "html": None, "folder": folder, "account": None, "parent": None, "force": True}
     return notes.call_jxa(payload, 60, False)
 
 

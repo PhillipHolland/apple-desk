@@ -9,7 +9,7 @@ import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-VERSION = "0.1.6"
+VERSION = "0.1.7"
 LIB = Path(__file__).resolve().parent / "calendar.js"
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import cache as calcache  # noqa: E402
@@ -25,7 +25,7 @@ def wake_calendar():
 
 GAPS = [
     "Direct EventKit is not used. A command-line binary has no NSCalendarsUsageDescription, so macOS often will not show the Calendars privacy prompt for the binary. This CLI asks Calendar.app over Apple Events. The usual grant is Automation (Grok Bot or Grok Bot Helper → Calendar). If Calendar still refuses the data, also enable Grok Bot and Grok Bot Helper under Privacy & Security → Calendars, then quit and reopen Grok Bot.",
-    "Reads are the default. create and update write when you run them. delete and alarm refuse without --force. There is no delete-all and no command that removes every alarm.",
+    "Reads are the default. create and update are a dry-run unless --force, on the JXA path and when calendar-cli is installed. --dry-run wins over --force and does not call Calendar.app or calendar-cli. delete and alarm refuse without --force. There is no delete-all and no command that removes every alarm. If calendar-cli is installed, create and update reach that binary only with --force and without --dry-run.",
     "show returns attendeeCount and alarmCount only. It does not list attendee or RSVP names, participation status, or email addresses. Those names stay omitted unless you explicitly ask, and this CLI has no command that prints them. It does not send invites or propose a new time. It does not set travel time or change availability.",
     "alarm --uid --minutes N adds one display alarm N minutes before the start (Calendar's trigger interval, stored negative). Without --force it is a dry-run and does not call Calendar.app. Sound, mail, and open-file alarms are not created.",
     "Recurrence on show is a small object (summary, and frequency or until when Calendar exposes them). This CLI does not create or edit a series, and it does not target one occurrence versus the whole series.",
@@ -202,7 +202,7 @@ def print_doctor(data):
     print(f"grok-calendar {VERSION}  ok")
     print("backend: Calendar.app JXA")
     print(f"automation: {data.get('automation')}")
-    print("writes: create and update are live; delete and alarm need --force")
+    print("writes: JXA create and update are dry-run unless --force; delete and alarm need --force")
     print(f"Calendar {app.get('version')} ({app.get('id')})")
     print(f"calendars: {data.get('calendars')}   writable: {data.get('writableCalendars') if data.get('writableCalendars') is not None else '(see calendars)'}")
 
@@ -362,7 +362,7 @@ def build_parser():
     sp.add_argument("--calendar")
     add_json(sp)
 
-    sp = sub.add_parser("create", help="Create one event (mutation)")
+    sp = sub.add_parser("create", help="Create one event. Dry-run unless --force.")
     sp.add_argument("--calendar", required=True)
     sp.add_argument("--title", required=True)
     sp.add_argument("--start", required=True, help="YYYY-MM-DD or YYYY-MM-DD HH:MM")
@@ -370,10 +370,11 @@ def build_parser():
     sp.add_argument("--all-day", action="store_true")
     sp.add_argument("--location")
     sp.add_argument("--notes")
-    sp.add_argument("--dry-run", action="store_true", help="Validate args only; do not call Calendar.app")
+    sp.add_argument("--force", action="store_true", help="Apply in Calendar.app. Without this, Calendar is not called.")
+    sp.add_argument("--dry-run", action="store_true", help="Do not call Calendar.app. Wins over --force.")
     add_json(sp)
 
-    sp = sub.add_parser("update", help="Change one event by uid (mutation, same calendar)")
+    sp = sub.add_parser("update", help="Change one event by uid. Dry-run unless --force. Same calendar.")
     sp.add_argument("--uid", required=True)
     sp.add_argument("--title")
     sp.add_argument("--start")
@@ -382,7 +383,8 @@ def build_parser():
     sp.add_argument("--timed", action="store_true", help="clear all-day")
     sp.add_argument("--location")
     sp.add_argument("--notes")
-    sp.add_argument("--dry-run", action="store_true", help="Validate only; do not call Calendar.app")
+    sp.add_argument("--force", action="store_true", help="Apply in Calendar.app. Without this, Calendar is not called.")
+    sp.add_argument("--dry-run", action="store_true", help="Do not call Calendar.app. Wins over --force.")
     add_json(sp)
 
     sp = sub.add_parser("delete", help="Delete one event by uid")
@@ -547,7 +549,7 @@ def main(argv=None):
                 die(2, "bad_request", "end must be YYYY-MM-DD or YYYY-MM-DD HH:MM. Calendar was not called.", as_json)
             if start_dt and end_dt and end_dt < start_dt:
                 die(2, "bad_request", "end is before start. Calendar was not called.", as_json)
-        if args.dry_run:
+        if args.dry_run or not args.force:
             data = {
                 "ok": True,
                 "dryRun": True,
@@ -559,7 +561,7 @@ def main(argv=None):
                 "allDay": bool(args.all_day),
                 "location": args.location,
                 "notes": args.notes,
-                "message": "dry-run: Calendar.app was not called.",
+                "message": "dry-run: Calendar.app was not called. Pass --force to apply.",
             }
             emit(data, as_json, lambda d: print(f"dry-run create {d.get('title')!r} on {d.get('calendar')} at {d.get('start')} (Calendar not called)"))
             return
@@ -572,6 +574,7 @@ def main(argv=None):
             "allDay": bool(args.all_day),
             "location": args.location,
             "notes": args.notes,
+            "force": True,
         }, LONG_TIMEOUT, as_json)
         emit(data, as_json, print_write)
         return
@@ -583,7 +586,7 @@ def main(argv=None):
         if args.end and parse_stamp(args.end) is False:
             die(2, "bad_request", "end must be YYYY-MM-DD or YYYY-MM-DD HH:MM. Calendar was not called.", as_json)
         all_day = True if args.all_day else False if args.timed else None
-        if args.dry_run:
+        if args.dry_run or not args.force:
             data = {
                 "ok": True,
                 "dryRun": True,
@@ -592,7 +595,7 @@ def main(argv=None):
                 "title": args.title,
                 "start": args.start,
                 "end": args.end,
-                "message": "dry-run: Calendar.app was not called.",
+                "message": "dry-run: Calendar.app was not called. Pass --force to apply.",
             }
             emit(data, as_json, lambda d: print(f"dry-run update {d.get('uid')} (Calendar not called)"))
             return
@@ -605,6 +608,7 @@ def main(argv=None):
             "allDay": all_day,
             "location": args.location,
             "notes": args.notes,
+            "force": True,
         }, LONG_TIMEOUT, as_json)
         emit(data, as_json, print_write)
         return

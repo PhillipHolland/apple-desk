@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""grok-desk 0.1.8 — onboard a Mac and build local search indexes.
+"""grok-desk 0.1.9 — onboard a Mac and build local search indexes.
 
 Caches stay under ~/.cache (0700 dirs, 0600 databases). Nothing is uploaded
 except one optional anonymous onboard-ok request, once, after a successful
@@ -38,8 +38,8 @@ SURFACES = ("notes", "messages", "contacts", "calendar", "reminders")
 
 GAPS = [
     "Indexes are local SQLite files under ~/.cache. grok-desk never uploads them and never copies chat.db.",
-    "Notes uses the existing grok-notes cache (~/.cache/grok-notes/index.sqlite). There is no second notes database.",
-    "Messages stores chat guid, display name, group flag, service, last date, and message count, plus an FTS index of message text when Full Disk Access allows the read. Send rules are unchanged: grok-messages --to is 1:1 only; groups need --chat-guid.",
+    "Notes uses the existing grok-notes cache (~/.cache/grok-notes/index.sqlite). There is no second notes database. Default reindex stores titles, folders, and dates only and does not keep note bodies in that index. --index-bodies stores note bodies and keeps bodies already stored. That file is as sensitive as Notes.app. grok-notes cache-clear deletes it.",
+    "Messages stores chat guid, display name, group flag, service, last date, and message count. Default reindex does not store message text and drops any message text already in that index. --index-bodies adds an FTS index of message text when Full Disk Access allows the read, and it keeps rows already stored. ~/.cache/grok-messages is as sensitive as Messages when bodies were indexed. Removing that directory removes the copy. There is no grok-messages cache-clear. Send rules are unchanged: grok-messages --to is 1:1 only; groups need --chat-guid. Send still needs --force --confirm.",
     "The contacts cache (id, name, org, phones, emails) is off unless onboard --index-contacts or reindex --only contacts. It is not built by a normal onboard.",
     "Calendar reindex runs grok-calendar doctor once. When that is authorized it stores calendar names and events in a portable window: past 30 days through the next 90 days (override with --past-days/--future-days or GROK_CALENDAR_PAST_DAYS and GROK_CALENDAR_FUTURE_DAYS, each 0..366). One calendar index at a time (uid, title, start, end, all-day, calendar name). Only the Apple system calendar titled Scheduled Reminders is skipped by name. A wide window that times out is read in 14-day slices, and each slice is retried once. A slice over 800 events is split further by date. Doctor timeout or denied Automation sets pending_allow and is not retried. Locations and notes are not stored. grok-calendar list/search and grok-desk search read this cache first.",
     "Reminders reindex runs a names-only doctor, lean lists, then one incomplete-only collect (id, list, title, due). Notes are not stored. Timeout or denied Automation sets pending_allow and is not retried. Mail is not indexed. Focus and Safari are probed by doctor and are not part of this index.",
@@ -211,13 +211,15 @@ def status_rows() -> list[dict]:
     return rows
 
 
-def reindex_notes(full: bool) -> dict:
+def reindex_notes(full: bool, index_bodies: bool = False) -> dict:
     path = common.which("grok-notes")
     if not path:
         return {"ok": False, "surface": "notes", "error": "missing_cli", "message": "grok-notes is not on PATH."}
     cmd = [path, "reindex", "--json"]
     if full:
         cmd.append("--full")
+    if index_bodies:
+        cmd.append("--index-bodies")
     result = common.run_cmd(cmd, 180)
     if result.get("error") == "timeout":
         return {
@@ -243,11 +245,11 @@ def reindex_notes(full: bool) -> dict:
     return summary
 
 
-def reindex_surface(name: str, full: bool, index_contacts: bool, past_days: int | None = None, future_days: int | None = None) -> dict:
+def reindex_surface(name: str, full: bool, index_contacts: bool, past_days: int | None = None, future_days: int | None = None, index_bodies: bool = False) -> dict:
     if name == "notes":
-        return reindex_notes(full)
+        return reindex_notes(full, index_bodies=index_bodies)
     if name == "messages":
-        return messages_index.build(full=full)
+        return messages_index.build(full=full, index_bodies=index_bodies)
     if name == "contacts":
         if not index_contacts:
             return {
@@ -264,7 +266,7 @@ def reindex_surface(name: str, full: bool, index_contacts: bool, past_days: int 
     return {"ok": False, "surface": name, "error": "unknown_surface"}
 
 
-def do_reindex(full: bool, only: str | None, index_contacts: bool, past_days: int | None = None, future_days: int | None = None) -> dict:
+def do_reindex(full: bool, only: str | None, index_contacts: bool, past_days: int | None = None, future_days: int | None = None, index_bodies: bool = False) -> dict:
     if only:
         names = [only]
         if only == "contacts":
@@ -273,7 +275,7 @@ def do_reindex(full: bool, only: str | None, index_contacts: bool, past_days: in
         names = ["notes", "messages", "calendar", "reminders"]
         if index_contacts:
             names.append("contacts")
-    indexes = [reindex_surface(name, full, index_contacts, past_days, future_days) for name in names]
+    indexes = [reindex_surface(name, full, index_contacts, past_days, future_days, index_bodies) for name in names]
     ok = all(item.get("ok") for item in indexes)
     return {"ok": ok, "tool": common.TOOL, "version": VERSION, "indexes": indexes}
 
@@ -475,7 +477,7 @@ def _run_surface_doctor(bin_name: str, timeout: float, extra_args: list[str] | N
     }
 
 
-def do_guided_onboard(index_contacts: bool, skip_optional: bool = False, skip_signature: bool = False) -> tuple[dict, int]:
+def do_guided_onboard(index_contacts: bool, skip_optional: bool = False, skip_signature: bool = False, index_bodies: bool = False) -> tuple[dict, int]:
     """Walk permission gates one-by-one. Stop at first hard failure.
 
     Returns (payload, process_exit_code). Re-run after the user clicks Allow.
@@ -682,7 +684,7 @@ def do_guided_onboard(index_contacts: bool, skip_optional: bool = False, skip_si
     })
 
     # 11) Reindex once
-    indexed = do_reindex(False, None, index_contacts)
+    indexed = do_reindex(False, None, index_contacts, index_bodies=index_bodies)
     gate = {
         "id": "reindex",
         "title": "Local reindex",
@@ -733,10 +735,10 @@ def emit_guided(data: dict, as_json: bool) -> None:
         if not gate.get("ok") and gate.get("settingsPath"):
             print(f"       → {gate['settingsPath']}")
 
-def do_onboard(full: bool, index_contacts: bool) -> dict:
+def do_onboard(full: bool, index_contacts: bool, index_bodies: bool = False) -> dict:
     links = [common.link_if_needed(name) for name in ("grok-desk",) + common.TOOLS]
     doctors = safe_doctors()
-    indexed = do_reindex(full, None, index_contacts)
+    indexed = do_reindex(full, None, index_contacts, index_bodies=index_bodies)
     ok = indexed["ok"]
     return {
         "ok": ok,
@@ -891,6 +893,7 @@ def build_parser() -> argparse.ArgumentParser:
     onboard = sub.add_parser("onboard", help="Link missing bins, safe checks, then reindex")
     onboard.add_argument("--full", action="store_true")
     onboard.add_argument("--index-contacts", action="store_true", help="Opt in to the contacts phone/email cache")
+    onboard.add_argument("--index-bodies", action="store_true", help="Store Messages text and Notes bodies. Default reindex is metadata only.")
     onboard.add_argument(
         "--guided",
         action="store_true",
@@ -907,6 +910,7 @@ def build_parser() -> argparse.ArgumentParser:
     reindex.add_argument("--full", action="store_true")
     reindex.add_argument("--only", choices=SURFACES)
     reindex.add_argument("--index-contacts", action="store_true")
+    reindex.add_argument("--index-bodies", action="store_true", help="Store Messages text and Notes bodies. Default is metadata only.")
     reindex.add_argument("--past-days", type=int, default=None, help="Calendar window before today (default 30, or GROK_CALENDAR_PAST_DAYS)")
     reindex.add_argument("--future-days", type=int, default=None, help="Calendar window after today (default 90, or GROK_CALENDAR_FUTURE_DAYS)")
     add_json(reindex)
@@ -978,7 +982,7 @@ def main(argv=None) -> int:
             onboard_ping.maybe_ping()
         return 0
     if args.cmd == "reindex":
-        data = do_reindex(args.full, args.only, args.index_contacts, getattr(args, "past_days", None), getattr(args, "future_days", None))
+        data = do_reindex(args.full, args.only, args.index_contacts, getattr(args, "past_days", None), getattr(args, "future_days", None), index_bodies=bool(getattr(args, "index_bodies", False)))
         emit(data, as_json)
         return 0 if data["ok"] else 1
     if args.cmd == "onboard":
@@ -987,12 +991,13 @@ def main(argv=None) -> int:
                 args.index_contacts,
                 skip_optional=False,
                 skip_signature=bool(getattr(args, "skip_signature", False)),
+                index_bodies=bool(getattr(args, "index_bodies", False)),
             )
             emit_guided(data, as_json)
             if code == 0 and data.get("ok"):
                 onboard_ping.maybe_ping()
             return code
-        data = do_onboard(args.full, args.index_contacts)
+        data = do_onboard(args.full, args.index_contacts, index_bodies=bool(getattr(args, "index_bodies", False)))
         emit(data, as_json)
         return 0 if data.get("ok") else 1
 

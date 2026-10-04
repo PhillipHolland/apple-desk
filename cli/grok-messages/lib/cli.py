@@ -3,29 +3,35 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import hmac
 import json
 import os
+import secrets
 import shlex
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import db
 
-VERSION = "0.2.11"
+VERSION = "0.2.12"
 LIB = Path(__file__).resolve().parent / "messages.js"
 ALLOWLIST = Path.home() / ".config" / "grok-messages" / "allowlist"
 MAX_TEXT = 4000
+CONFIRM_TTL_SECONDS = 600
+CONFIRM_FILENAME = "send-confirm.json"
 
 GAPS = [
     "Messages 26 scripting can list chats (id, name, participants) and send text to an existing chat. It cannot read message history. History comes from ~/Library/Messages/chat.db and needs Full Disk Access for the process that runs this CLI (Grok Bot Helper when an agent runs it).",
-    "Send to an existing chat uses the Messages scripting list. A missing 1:1 is the exception: when --to is a phone or email handle and the text is non-empty, --force sends one message, and that first message is what creates the chat. The scripting dictionary cannot make an empty chat. Dry-run does not send and does not create a chat. A display name with no 1:1 stays not_found. An existing 1:1 is reused. A group name or group guid is still refused. Unknown-sender and junk chats are often absent, so history can show them while a --chat-guid send returns not_in_messages_ui. Nothing is sent in that case.",
+    "Send to an existing chat uses the Messages scripting list. A missing 1:1 is the exception: when --to is a phone or email handle and the text is non-empty, send --force --confirm TOKEN sends one message, and that first message is what creates the chat. --force alone does not send. The scripting dictionary cannot make an empty chat. A send without --force is a dry-run: it prints a confirm token and does not send or create a chat. A display name with no 1:1 stays not_found. An existing 1:1 is reused. A group name or group guid is still refused. Unknown-sender and junk chats are often absent, so history can show them while a --chat-guid send returns not_in_messages_ui. Nothing is sent in that case.",
     "send --to is a person only (phone, email, or a 1:1 chat). It never targets a group, even when that handle is a member of one. The send uses Messages' participant object (1:1). If the handle exists only in a group, send does not message that group. A phone or email handle plus text can start a separate 1:1; the group itself still needs --chat-guid. A group name or group guid is refused. This CLI does not create groups.",
     "attachments lists metadata for one chat (name, mime, bytes, sticker, date). Default output has no absolute path. --reveal-path prints the local absolute path already stored on the row and warns that it is a private file. It does not open, copy, upload, or search the disk. A row with no stored path says so and exits cleanly. Send still cannot attach a file. react is a 1:1 wrap of imsg react (love, like, dislike, laugh, emphasis, question; emphasize means emphasis). It is a dry-run unless --force, has no --chat-guid, and refuses groups. --force does not pre-check the screen lock and does not activate Messages. It runs imsg react once. Vendor imsg activates Messages and exits -2700 if it is not in front. It does not call imsg tapback, imsg launch, or IMCore, and it has no AppleScript fallback. Stickers-as-send, message effects, edits, unsends, and replies are still absent. Send is plain text only, capped at 4000 characters.",
     "No pin, mute, hide alerts, or Focus filter changes. mark-read does not write chat.db and does not use IMCore. With --force it makes Messages frontmost, then clicks an enabled Conversation > Mark All as Read. Activate alone is not success. It does not send.",
     "Search looks at the message text column only. Attachment-only rows and a few attributed-body-only rows have null text and will not match. Snippets are capped.",
     "Reactions are labeled (love, like, dislike, laugh, emphasize, question, emoji) from the row itself. The message that was reacted to is not pulled in.",
-    "An optional allowlist file (~/.config/grok-messages/allowlist) restricts send targets if it exists. One handle or chat guid per line. If the file exists and has no targets, every send is refused. If the file does not exist, --force is the only gate.",
+    "An optional allowlist file (~/.config/grok-messages/allowlist) restricts send targets if it exists. One handle or chat guid per line. If the file exists and has no targets, every send is refused. If the file does not exist, send still needs a confirm token from a dry-run plus --force --confirm. --force alone does not send. The token is stored mode 0600 under ~/.config/grok-messages and does not contain the message body.",
     "There is no cloud iMessage API here. This does not talk to iCloud.com.",
     "imsg history and imsg watch are read-only wraps of the vendored imsg binary ($GROK_MESSAGES_IMSG when executable, else the source checkout release binary). There is no imsg attachments subcommand. Attachment paths are original_path fields on those JSON rows. Default is a dry-run: it prints the argv and does not run imsg, so it prints no message body and no path. --force runs imsg with --json and still omits message text. --reveal-path is the only path print, and it does not open the file. Attachment conversion is never requested, because that writes a cache. send, react, and mark-read do not use this wrap. It does not call imsg send, imsg tapback, imsg launch, or IMCore. imsg search stays on the in-house search command.",
     "unread counts incoming rows with is_read = 0. It does not mark chats read, does not return message text, and does not call Messages.app. Names come from the chat display name, then the local contacts cache when that index exists. Marking read is the separate mark-read command.",
@@ -98,7 +104,8 @@ def call_send_jxa(payload, timeout, as_json):
 def emit(data, as_json, text_fn):
     if not data.get("ok", False):
         soft = {
-            "needs_force", "unsupported", "missing_target", "missing_text",
+            "needs_force", "needs_confirm", "confirm_missing", "confirm_mismatch", "confirm_expired",
+            "unsupported", "missing_target", "missing_text",
             "ambiguous", "bad_request", "not_found", "query_too_broad",
             "not_in_messages_ui", "allowlist_blocked", "text_too_long",
             "refusing_group", "both_targets", "not_frontmost", "menu_disabled",
@@ -191,6 +198,7 @@ def cmd_doctor(args):
         "backend": "messages-app-jxa+chat-db" if history["available"] else "messages-app-jxa",
         "readOnly": False,
         "sendRequiresForce": True,
+        "sendRequiresConfirm": True,
         "messagesApp": {"name": script.get("name"), "version": script.get("version")},
         "scriptingChatCount": script.get("scriptingChatCount"),
         "history": {k: v for k, v in history.items() if k != "message"},
@@ -218,10 +226,10 @@ def cmd_doctor(args):
         if al["enabled"]:
             print(f"allowlist: on ({al['count']} targets)  {al['path']}")
         else:
-            print("allowlist: off (send still needs --force)")
-        print("writes: send only with --force. mark-read --force clicks enabled Conversation > Mark All as Read after Messages is frontmost. No chat.db write.")
+            print("allowlist: off (send still needs --force --confirm)")
+        print("writes: send only with --force --confirm TOKEN from a dry-run. --force alone does not send. mark-read --force clicks enabled Conversation > Mark All as Read after Messages is frontmost. No chat.db write.")
         print("send --to is 1:1 participant only; a group needs --chat-guid")
-        print("missing 1:1: a phone or email handle plus text, and only --force. The first message is the creation. Dry-run does not create a chat.")
+        print("missing 1:1: a phone or email handle plus text, and only --force --confirm. The first message is the creation. A dry-run does not create a chat.")
         print("react is 1:1 only (no --chat-guid). Dry-run unless --force, which runs imsg react once. The wrap does not pre-check the lock. Vendor imsg exits -2700 if Messages is not in front.")
 
     emit(data, as_json, text)
@@ -395,6 +403,114 @@ def allowlist_allows_handle(handle: str) -> bool:
     return db.norm_handle(handle) in wanted or handle in wanted
 
 
+def confirm_dir() -> Path:
+    override = os.environ.get("GROK_MESSAGES_CONFIRM_DIR")
+    if override:
+        return Path(override)
+    return Path.home() / ".config" / "grok-messages"
+
+
+def confirm_file() -> Path:
+    return confirm_dir() / CONFIRM_FILENAME
+
+
+def recipient_binding(to: str, chat_guid: str, service: str | None) -> str:
+    svc = (service or "").strip()
+    if chat_guid:
+        return "chat-guid:" + chat_guid + "\n" + svc
+    return "to:" + to + "\n" + svc
+
+
+def _same(left: str, right: str) -> bool:
+    # Hash first so a shorter token cannot raise or leak its length.
+    digest = hashlib.sha256
+    return hmac.compare_digest(
+        digest(left.encode("utf-8")).digest(),
+        digest(right.encode("utf-8")).digest(),
+    )
+
+
+def _write_private_json(path: Path, payload: dict) -> None:
+    directory = path.parent
+    directory.mkdir(parents=True, exist_ok=True)
+    os.chmod(directory, 0o700)
+    blob = (json.dumps(payload, separators=(",", ":")) + "\n").encode("utf-8")
+    tmp = path.with_name("." + path.name + ".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, blob)
+    finally:
+        os.close(fd)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+    os.chmod(path, 0o600)
+
+
+def _attach_confirm(preview: dict, binding: str, text: str, as_json: bool) -> None:
+    preview["confirmToken"] = issue_confirm(binding, text, as_json)
+    preview["confirmExpiresSeconds"] = CONFIRM_TTL_SECONDS
+    preview["message"] = "dry-run: nothing was sent. Pass this confirm token to send --force --confirm TOKEN."
+
+
+def issue_confirm(binding: str, text: str, as_json: bool) -> str:
+    token = secrets.token_urlsafe(32)
+    payload = {
+        "token": token,
+        "recipient": binding,
+        "text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        "expires": int(time.time()) + CONFIRM_TTL_SECONDS,
+    }
+    try:
+        _write_private_json(confirm_file(), payload)
+    except OSError:
+        die(1, "confirm_store", "Could not store a confirm token. Nothing was sent.", as_json)
+    return token
+
+
+CONFIRM_MESSAGES = {
+    "needs_confirm": "Refusing to send with --force alone. Run send without --force to print a confirm token, then send --force --confirm TOKEN. Nothing was sent.",
+    "confirm_missing": "No confirm token is stored. Run send without --force first. Nothing was sent.",
+    "confirm_mismatch": "Confirm token does not match this recipient and text. Nothing was sent.",
+    "confirm_expired": "Confirm token expired. Run send without --force again. Nothing was sent.",
+}
+
+
+def take_confirm(token: str, binding: str, text: str) -> str | None:
+    """Return an error code, or None after consuming a matching token."""
+    path = confirm_file()
+    if not path.is_file():
+        return "confirm_missing"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeError):
+        return "confirm_missing"
+    if not isinstance(data, dict):
+        return "confirm_missing"
+    try:
+        expires = int(data.get("expires") or 0)
+    except (TypeError, ValueError):
+        expires = 0
+    if expires < time.time():
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        return "confirm_expired"
+    supplied = token or ""
+    if not supplied or not _same(str(data.get("token") or ""), supplied):
+        return "confirm_mismatch"
+    if not _same(str(data.get("recipient") or ""), binding):
+        return "confirm_mismatch"
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    if not _same(str(data.get("text_sha256") or ""), digest):
+        return "confirm_mismatch"
+    try:
+        path.unlink()
+    except OSError:
+        return "confirm_missing"
+    return None
+
+
 def cmd_send(args):
     as_json = args.json
     text = args.text if args.text is not None else ""
@@ -408,8 +524,10 @@ def cmd_send(args):
         die(2, "missing_text", "Pass --text. Nothing was sent.", as_json)
     if len(text) > MAX_TEXT:
         die(2, "text_too_long", f"Text is {len(text)} characters. The cap is {MAX_TEXT}. Nothing was sent.", as_json)
-    if not args.force and not args.dry_run:
-        die(2, "needs_force", "Refusing to send without --force. Nothing was sent. Draft the recipient and text and wait for an explicit yes.", as_json)
+    binding = recipient_binding(to, chat_guid, args.service)
+    confirm = (getattr(args, "confirm", None) or "").strip()
+    if args.force and not args.dry_run and not confirm:
+        die(2, "needs_confirm", CONFIRM_MESSAGES["needs_confirm"], as_json)
 
     con = open_db(as_json)
     try:
@@ -522,9 +640,14 @@ def cmd_send(args):
     if args.dry_run or not args.force:
         # dry-run never calls Messages.send, even if --force was also passed.
         # A missing chat stops here: no resolve, no send, no create.
+        # The confirm token is issued only after resolution succeeds.
         if route == "new_participant":
+            _attach_confirm(preview, binding, text, as_json)
+
             def show_new(d):
                 print(f"dry-run: no 1:1 chat for {d.get('handle')}. The first message would create it ({d['textLength']} characters).")
+                print(f"confirm: {d.get('confirmToken')}")
+                print("expires in 10 minutes. send --force --confirm TOKEN")
                 print("nothing sent and no chat created")
 
             emit(preview, as_json, show_new)
@@ -550,6 +673,8 @@ def cmd_send(args):
             preview["scriptingGroup"] = looked.get("group")
             preview["participantCount"] = looked.get("participantCount")
 
+        _attach_confirm(preview, binding, text, as_json)
+
         def show(d):
             chat = d["chat"]
             label = chat.get("name") or chat.get("identifier") or chat.get("guid")
@@ -560,10 +685,16 @@ def cmd_send(args):
             else:
                 kind = "group" if d.get("group") else "chat"
                 print(f"dry-run: would send {d['textLength']} characters to {kind} {label} ({chat.get('service')}, {chat.get('guid')})")
+            print(f"confirm: {d.get('confirmToken')}")
+            print("expires in 10 minutes. send --force --confirm TOKEN")
             print("nothing sent")
 
         emit(preview, as_json, show)
         return
+
+    reason = take_confirm(confirm, binding, text)
+    if reason:
+        die(2, reason, CONFIRM_MESSAGES[reason], as_json)
 
     if route == "new_participant":
         result = call_send_jxa({
@@ -1283,18 +1414,20 @@ def build_parser():
         "send",
         help="Send plain text. --to is 1:1 only. Groups need --chat-guid.",
         description=(
-            "Send plain text through Messages.app's non-UI scripting path. It never activates Messages, clicks menus, waits for a frontmost window, or uses mark-read's screen_locked guard. The --to 1:1 path is participant-only; screen lock does not block send. On AppleEvent -1712 / exit 4, quit and relaunch Messages once, make one send attempt, then stop. Nothing is sent unless --force is set. "
+            "Send plain text through Messages.app's non-UI scripting path. It never activates Messages, clicks menus, waits for a frontmost window, or uses mark-read's screen_locked guard. The --to 1:1 path is participant-only; screen lock does not block send. On AppleEvent -1712 / exit 4, quit and relaunch Messages once, make one send attempt, then stop. "
+            "Send without --force is a dry-run and prints a confirm token. --force alone does not send. "
+            "The only send is --force --confirm TOKEN. The token matches the recipient and the exact text and expires in 10 minutes. "
             "--dry-run never sends and never creates a chat, even with --force. "
             "A missing 1:1 is created only when --to is a phone or email handle and --text is non-empty. "
-            "The scripting dictionary cannot make an empty chat, so the first message is the creation, and only --force applies it. "
+            "The scripting dictionary cannot make an empty chat, so the first message is the creation, and only --force --confirm applies it. "
             "An existing 1:1 is reused. A display name with no 1:1 is not_found. A group name or group guid is refused. "
             "--to is a person (phone, email, or the name of an existing 1:1 chat) and must never "
             "select a group, even when that handle is a member of one. The send goes to a Messages "
             "participant (one-to-one), not to a chat object that might be a group. "
-            "If the person only appears in a group, that group is not the target. A phone or email handle plus text can start a separate 1:1, and only --force sends it. "
+            "If the person only appears in a group, that group is not the target. A phone or email handle plus text can start a separate 1:1, and only --force --confirm sends it. "
             "A group name is refused. To message a group on purpose, pass --chat-guid with that exact guid. "
             "Do not pass both --to and --chat-guid. "
-            "Agents must draft the recipient and the exact text and wait for an explicit yes before --force. "
+            "Agents must draft the recipient and the exact text, run send without --force, wait for an explicit yes, then send --force --confirm TOKEN. "
             "Never send to a group unless the user named that group."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1304,8 +1437,9 @@ def build_parser():
     send.add_argument("--chat-guid", help="Exact chat guid. The only way to send to a group, and only when that group was named.")
     send.add_argument("--text", help="Plain text to send. Required. Cap is 4000 characters.")
     send.add_argument("--service", choices=("iMessage", "SMS", "RCS"), help="Limit --to to one service when several 1:1 chats match.")
-    send.add_argument("--force", action="store_true", help="Actually send. Without this, nothing is sent.")
-    send.add_argument("--dry-run", action="store_true", help="Resolve the target and print the route. Never sends, even with --force.")
+    send.add_argument("--force", action="store_true", help="Send only together with --confirm TOKEN. --force alone does not send.")
+    send.add_argument("--confirm", help="Confirm token printed by a dry-run. Required with --force. Bound to this recipient and the exact text. Expires in 10 minutes.")
+    send.add_argument("--dry-run", action="store_true", help="Resolve the target and print a confirm token. Never sends, even with --force.")
     send.set_defaults(func=cmd_send)
 
     attachments = sub.add_parser(

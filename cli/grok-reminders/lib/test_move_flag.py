@@ -66,7 +66,7 @@ def main():
             break
     check("flag exists", subs is not None and "flag" in subs)
     check("move exists", "move" in subs)
-    check("version is 0.1.5", cli.VERSION == "0.1.5")
+    check("version is 0.1.6", cli.VERSION == "0.1.6")
 
     gaps_blob = " ".join(cli.GAPS)
     check("gaps mention recurrence unavailable", "recurrence" in gaps_blob.lower() and "not available" in gaps_blob.lower())

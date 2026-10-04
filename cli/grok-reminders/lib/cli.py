@@ -9,7 +9,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "0.1.5"
+VERSION = "0.1.6"
 LIB = Path(__file__).resolve().parent / "reminders.js"
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import cache as remcache  # noqa: E402
@@ -17,7 +17,7 @@ import cache as remcache  # noqa: E402
 
 GAPS = [
     "This is Reminders.app scripting, not RemCTL and not EventKit. RemCTL may still be installed on this Mac. Do not call it for Apple Desk work.",
-    "No smart lists, sections, tags, subtasks, location alarms, early reminders, or URLs. Recurrence is not available on this JXA path and EventKit is not in this build. move and flag write exist but stay dry-run unless --force.",
+    "No smart lists, sections, tags, subtasks, location alarms, early reminders, or URLs. Recurrence is not available on this JXA path and EventKit is not in this build. add, done, move, and flag stay dry-run unless --force. If reminder-cli is installed, add and done reach that binary only with --force and without --dry-run. --dry-run never calls reminder-cli. delete still needs --force.",
     "Sharing is out. You cannot invite someone or see sharees.",
     "Due times are this Mac's local timezone. Pass YYYY-MM-DD or YYYY-MM-DD HH:MM. A date with no time is stored at 09:00 local.",
     "today is incomplete reminders whose due day is today. upcoming is incomplete reminders due from today through N days (default 7). Reminders with no due date are in neither.",
@@ -147,7 +147,7 @@ def cmd_doctor(args):
         print(f"default list: {d.get('defaultList')}")
         print(f"automation: {d['automation']}")
         print("backend: Reminders.app JXA (not RemCTL)")
-        print("writes: add and done are live; delete needs --force")
+        print("writes: add and done are dry-run unless --force; delete needs --force")
 
     emit(data, as_json, text)
 
@@ -315,20 +315,22 @@ def cmd_add(args):
         die(2, "missing_title", "Pass --title. Nothing was added.", as_json)
     if args.due and not _due_ok(args.due):
         die(2, "bad_request", "Due must be YYYY-MM-DD or YYYY-MM-DD HH:MM. Reminders was not called.", as_json)
-    if args.dry_run:
+    if args.dry_run or not args.force:
         data = {
             "ok": True,
             "dryRun": True,
             "wouldAdd": True,
+            "applied": False,
             "title": title,
             "list": args.list,
             "due": args.due,
             "priority": args.priority,
-            "message": "dry-run: Reminders.app was not called.",
+            "message": DRY_RUN_MESSAGE,
         }
         emit(data, as_json, lambda d: print(f"dry-run add {d.get('title')!r} (Reminders not called)"))
         return
     payload = build_add_payload(title, list_name=args.list, due=args.due, notes=args.notes, priority=args.priority)
+    payload["force"] = True
     data = call_jxa(payload, LONG_TIMEOUT, as_json)
 
     def text(d):
@@ -341,7 +343,18 @@ def cmd_done(args):
     as_json = args.json
     if not args.id:
         die(2, "missing_id", "Pass --id. Nothing was changed.", as_json)
-    data = call_jxa({"op": "done", "id": args.id}, LONG_TIMEOUT, as_json)
+    if args.dry_run or not args.force:
+        data = {
+            "ok": True,
+            "dryRun": True,
+            "applied": False,
+            "op": "done",
+            "id": args.id,
+            "message": DRY_RUN_MESSAGE,
+        }
+        emit(data, as_json, lambda d: print(f"dry-run done {d.get('id')} (Reminders not called)"))
+        return
+    data = call_jxa({"op": "done", "id": args.id, "force": True}, LONG_TIMEOUT, as_json)
     emit(data, as_json, lambda d: print(f"completed {d.get('id')}"))
 
 
@@ -349,6 +362,17 @@ def cmd_delete(args):
     as_json = args.json
     if not args.id:
         die(2, "missing_id", "Pass --id. Nothing was deleted.", as_json)
+    if args.dry_run:
+        data = {
+            "ok": True,
+            "dryRun": True,
+            "wouldDelete": True,
+            "applied": False,
+            "id": args.id,
+            "message": "dry-run: Reminders.app was not called. A real delete still needs --force.",
+        }
+        emit(data, as_json, lambda d: print(f"dry-run delete {d.get('id')} (Reminders not called)"))
+        return
     if not args.force:
         die(2, "needs_force", "Refusing to delete without --force. One --id only; there is no mass delete. Nothing was deleted.", as_json)
     data = call_jxa({"op": "delete", "id": args.id}, LONG_TIMEOUT, as_json)
@@ -432,7 +456,7 @@ def cmd_gaps(args):
 
 
 def build_parser():
-    parser = argparse.ArgumentParser(prog="grok-reminders", description="Local Apple Reminders CLI (JXA). move and flag are dry-run unless --force. Not RemCTL, not EventKit.")
+    parser = argparse.ArgumentParser(prog="grok-reminders", description="Local Apple Reminders CLI (JXA). add, done, move, and flag are dry-run unless --force. Not RemCTL, not EventKit.")
     parser.add_argument("--version", action="version", version=f"grok-reminders {VERSION}")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -481,18 +505,22 @@ def build_parser():
     add.add_argument("--due", help="YYYY-MM-DD or YYYY-MM-DD HH:MM, Mac local time")
     add.add_argument("--notes")
     add.add_argument("--priority", choices=("high", "medium", "low", "none"))
-    add.add_argument("--dry-run", action="store_true", help="Validate only; do not call Reminders.app")
+    add.add_argument("--force", action="store_true", help="Apply in Reminders.app. Without this, Reminders is not called.")
+    add.add_argument("--dry-run", action="store_true", help="Do not call Reminders.app. Wins over --force.")
     add.set_defaults(func=cmd_add)
 
-    done = sub.add_parser("done")
+    done = sub.add_parser("done", help="Complete one reminder. Dry-run unless --force.")
     add_json(done)
     done.add_argument("--id", required=True)
+    done.add_argument("--force", action="store_true", help="Apply in Reminders.app. Without this, Reminders is not called.")
+    done.add_argument("--dry-run", action="store_true", help="Do not call Reminders.app. Wins over --force.")
     done.set_defaults(func=cmd_done)
 
     delete = sub.add_parser("delete")
     add_json(delete)
     delete.add_argument("--id", required=True)
     delete.add_argument("--force", action="store_true")
+    delete.add_argument("--dry-run", action="store_true", help="Do not call Reminders.app. Wins over --force.")
     delete.set_defaults(func=cmd_delete)
 
 

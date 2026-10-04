@@ -230,6 +230,12 @@ def main():
         else:
             print(title)
         raise SystemExit(0 if code == 0 else code)
+    # --dry-run must not call calendar-cli. Exit 86 so the in-house CLI prints the dry-run.
+    if cmd in {"create", "update", "delete"} and flags.get("dry-run"):
+        raise SystemExit(FALLBACK)
+    # create and update are dry-run unless --force. Fall through to the JXA dry-run.
+    if cmd in {"create", "update"} and not flags.get("force"):
+        raise SystemExit(FALLBACK)
     if cmd == "delete" and not flags.get("force"):
         msg = "delete refuses without --force. calendar-cli was not called."
         if as_json:

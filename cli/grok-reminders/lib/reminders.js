@@ -268,6 +268,7 @@ function run(argv) {
   }
 
   if (op === "add") {
+    if (payload.force !== true) return fail("needs_force", "add refuses unless force is true. Reminders was not changed.");
     var title = String(payload.title || "").trim();
     if (!title) return fail("missing_title", "Pass a title. Nothing was added.");
     var list;
@@ -302,6 +303,9 @@ function run(argv) {
   }
 
   if (op === "done" || op === "delete") {
+    if (op === "done" && payload.force !== true) {
+      return fail("needs_force", "done refuses unless force is true. Reminders was not changed.");
+    }
     var rid = String(payload.id || "");
     if (!rid) return fail("missing_id", "Pass an id. Nothing was changed.");
     var pool = lists();

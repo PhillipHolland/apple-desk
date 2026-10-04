@@ -234,6 +234,9 @@ function relatedList(person) {
 }
 
 function createPerson(app, payload) {
+  if (payload.force !== true) {
+    return { ok: false, error: "needs_force", message: "create refuses unless force is true. Contacts was not changed." };
+  }
   if (!payload.first && !payload.last && !payload.org) {
     return { ok: false, error: "missing_name", message: "create needs --first, --last, or --org." };
   }
@@ -263,6 +266,9 @@ function createPerson(app, payload) {
 }
 
 function updatePerson(app, payload) {
+  if (payload.force !== true) {
+    return { ok: false, error: "needs_force", message: "update refuses unless force is true. Contacts was not changed." };
+  }
   if (!payload.id) return { ok: false, error: "missing_target", message: "update needs --id." };
   var found = asList(app.people.whose({ id: payload.id })());
   if (found.length === 0) return { ok: false, error: "not_found", message: "No contact with that id." };

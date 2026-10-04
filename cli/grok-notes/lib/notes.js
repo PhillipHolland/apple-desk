@@ -742,13 +742,15 @@ function importMarkdown(req) {
     html: req.html,
     folder: req.folder || null,
     account: req.account || null,
-    parent: req.parent || null
+    parent: req.parent || null,
+    force: true
   });
   if (created && created.ok) created.imported = true;
   return created;
 }
 
 function createNote(req) {
+  if (req.force !== true) return fail("needs_force", "create-note refuses unless force is true. Notes was not changed.");
   if (!req.title && !req.html && !req.body) return fail("missing_title", "create-note needs --title");
   var Notes = app();
   var account = preferredAccount(Notes, req.account || null);
@@ -832,6 +834,7 @@ function deleteFolder(req) {
 }
 
 function editNote(req) {
+  if (req.force !== true) return fail("needs_force", "edit refuses unless force is true. Notes was not changed.");
   var Notes = app();
   var resolved = resolveNotes(Notes, req);
   if (resolved.error) return resolved.error;
