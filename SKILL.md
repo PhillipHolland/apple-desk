@@ -59,6 +59,14 @@ grok-desk signature --clear
 
 PARA folders and hashtags (`#project/x`, `#area/y`, `#waiting`, `#ref`) are recipes in `docs/NOTES_PARA.md`. Use `create-folder`, `create-note`, and `tags`. No extra app and no extra database.
 
+Snooze a Messages chat by creating a Reminder whose notes contain the chat guid. Recipe: `docs/MESSAGES_SNOOZE.md`.
+
+Before an outbound send or react, include `grok-focus status` in the draft. Recipe: `docs/FOCUS_ETIQUETTE.md`.
+
+## Morning briefing
+
+Read-only unread counts, today's reminders, and the calendar: `docs/MORNING_BRIEFING.md`.
+
 ## Recovery
 
 | Signal | Action |
@@ -72,6 +80,7 @@ PARA folders and hashtags (`#project/x`, `#area/y`, `#waiting`, `#ref`) are reci
 ## Consent and Messages send
 
 - Draft recipient + **exact** text (append the signature line yourself if `grok-desk signature` is set). Wait for an explicit yes. Then `grok-messages send --force`. The CLI does not append the signature.
+- Before an outbound send or react, the draft confirmation must include the output of `grok-focus status`. Focus filters the sender's UI more than the recipient's notifications. Do not block the send. Do not refuse `--force` because Focus is on. Do not activate Messages. Do not call `grok-focus set`.
 - **1:1 send** is Messages **participant** only. No `activate`, no menus. `--to` never targets a group.
 - **Group send** only with `--chat-guid` after the user named that group.
 - Send failures use the recovery card: **4** stops for one Allow click; **-1712** quits and relaunches Messages once, then one send, then stop.
