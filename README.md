@@ -23,18 +23,18 @@ grok-desk onboard --guided
 
 | CLI | Role |
 | --- | --- |
-| `grok-reminders` | Reminders 0.1.4 (in-house; dry-run add; names-only doctor) |
-| `grok-notes` | Notes.app + search cache (0.2.2, `import-md` / `export-md`) |
+| `grok-reminders` | Reminders 0.1.5 (in-house; dry-run add; names-only doctor) |
+| `grok-notes` | Notes.app + search cache (0.2.3, `import-md` / `export-md`) |
 | `grok-contacts` | Contacts.app 0.1.3 (cache-first search/show; nickname and relationship filters; `--live` for Contacts.app) |
 | `grok-messages` | Messages 0.2.11 (shipped mark-read, unread, gated send, 1:1 react; imsg history and watch are dry-run unless --force and hide bodies; attachment path is opt-in) |
-| `grok-calendar` | Calendar.app 0.1.5 (count-only doctor; cache-first list/search) |
+| `grok-calendar` | Calendar.app 0.1.6 (count-only doctor; cache-first list/search) |
 | `grok-shortcuts` | Shortcuts 0.1.2 list/run/create (`run` and `create` need `--force`) |
-| `grok-mail` | Mail.app 0.1.2 (blocked on Automation Allow; prefer Gmail connector) |
+| `grok-mail` | Mail.app 0.1.3 (blocked on Automation Allow; prefer Gmail connector) |
 | `grok-icloud` | iCloud Drive 0.1.1 list/read/summary (no force-download) |
 | `grok-spotlight` | Scoped `mdfind` (paths only; 0.1.0) |
 | `grok-desk` | Onboarding and local indexes (0.1.7). Contacts cache off by default. Optional one-line signature |
 | `grok-focus` | Focus status 0.1.1 (best-effort; set needs `--force` and a shortcut) |
-| `grok-safari` | Safari bookmarks + Reading List 0.1.1 (read-only plist) |
+| `grok-safari` | Safari bookmarks + Reading List 0.1.2 (read-only plist) |
 
 Requires macOS Automation (and Full Disk Access for Messages history).
 

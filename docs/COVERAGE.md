@@ -1,6 +1,6 @@
 # Coverage
 
-Working-tree `--help` / `--version` on 2026-10-03. Any Mac. Not a release tag. Dirty trees from other writers are not product.
+Source `VERSION` strings read 2026-10-04 from each CLI. Any Mac. Not a release tag. Dirty trees from other writers are not product.
 
 Messages `react` is the first peer wrap (`imsg react`, 1:1, dry-run unless `--force`). The other CLIs below are still in-house. Next step is wrap the remaining peer binaries and keep the `grok-*` name, the local `~/.cache/grok-*` cache, and the write gate. Do not vendor source.
 
@@ -10,10 +10,10 @@ Messages `react` is the first peer wrap (`imsg react`, 1:1, dry-run unless `--fo
 | --- | --- |
 | `grok-desk` 0.1.7 | `doctor` `onboard` `reindex` `status` `search` `signature` `gaps` |
 | `grok-messages` 0.2.11 | `doctor` `chats` `list` `recent` `search` `send` `attachments` `unread` `mark-read` `react` `history` `watch` `gaps` |
-| `grok-calendar` 0.1.5 | `doctor` `calendars` `name-at` `list` `search` `show` `create` `update` `delete` `gaps` |
-| `grok-reminders` 0.1.4 | `doctor` `lists` `today` `upcoming` `search` `show` `add` `done` `delete` `gaps` |
+| `grok-calendar` 0.1.6 | `doctor` `calendars` `name-at` `list` `search` `show` `create` `update` `delete` `alarm` `gaps` |
+| `grok-reminders` 0.1.5 | `doctor` `lists` `today` `upcoming` `search` `show` `add` `done` `delete` `flag` `move` `gaps` |
 | `grok-contacts` 0.1.3 | `doctor` `search` `show` `groups` `list` `create` `update` `delete` `create-group` `delete-group` `add-to-group` `remove-from-group` `gaps` |
-| `grok-notes` 0.2.2 | `doctor` `folders` `list` `show` `search` `reindex` `status` `cache-clear` `tags` `create-note` `create-folder` `rename-folder` `delete-folder` `edit` `append` `move` `duplicate` `delete-note` `empty-trash` `attachments` `checklist` `share` `pin` `unpin` `lock` `unlock` `open` `import-md` `export-md` `gaps` |
+| `grok-notes` 0.2.3 | `doctor` `folders` `list` `show` `search` `reindex` `status` `cache-clear` `tags` `create-note` `create-folder` `rename-folder` `delete-folder` `edit` `append` `move` `duplicate` `delete-note` `empty-trash` `attachments` `checklist` `promote-checklist` `share` `pin` `unpin` `lock` `unlock` `open` `import-md` `export-md` `gaps` |
 | `grok-mail` 0.1.3 | `doctor` `accounts` `mailboxes` `list` `show` `search` `draft` `flag` `move` `mark-read` `gaps` |
 | `grok-shortcuts` 0.1.2 | `doctor` `list` `create` `run` `gaps` |
 | `grok-icloud` 0.1.1 | `doctor` `ls` `tree` `find` `cat` `summary` `gaps` |
@@ -57,7 +57,7 @@ Wrap the `imsg` binary that implements `react` (`$GROK_MESSAGES_IMSG` when execu
 
 ## Deferred (not prod)
 
-Passwords, HomeKit, Photos, Freeform, and Safari. `grok-safari` 0.1.2 exists (`doctor` `status` `bookmarks` `reading-list` `search` `to-note` `reindex`) and is still not a full product surface. Also out: Notification Center, Maps, Find My, Screen Time, Journal, Voice Memos, Weather, Clock, Wallet, and Settings toggles.
+Passwords, HomeKit, Photos, Freeform, and Safari. `grok-safari` 0.1.2 exists (`doctor` `status` `bookmarks` `reading-list` `search` `to-note` `reindex` `cache-clear`) and is still not a full product surface. Also out: Notification Center, Maps, Find My, Screen Time, Journal, Voice Memos, Weather, Clock, Wallet, and Settings toggles.
 
 ## Gaps
 

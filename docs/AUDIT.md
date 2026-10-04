@@ -4,20 +4,30 @@ Checked 2026-10-03 about 12:45 PM CT on this Mac (macOS 27.0, build 26A5388g).
 Machine role: office Mac the agent shells into. No iMessages sent. No notes, contacts, reminders, or chats created or deleted.
 This file is the packaging snapshot. It does not include message text, phone numbers, emails, note bodies, or reminder titles.
 
-## Install layout (not a git repo yet)
+## Install layout
 
-| Tool | Version | Binary | Project | Doctor |
-| --- | --- | --- | --- | --- |
-| RemCTL (`remctl`, aliases `rctl`, `reminders`) | 2.3.0 | `~/bin/remctl` (also `remctl-permissions`) | Upstream MacStories install, not under `~/Developer` | ok, 0 failures, 2 warnings |
-| grok-notes | 0.2.0 | `~/bin/grok-notes` → `~/Developer/grok-notes/bin/grok-notes` (same link in `~/.local/bin`) | `~/Developer/grok-notes` | ok, Automation authorized |
-| grok-contacts | 0.1.0 | `~/bin/grok-contacts` → `~/Developer/grok-contacts/bin/grok-contacts` | `~/Developer/grok-contacts` | ok, Automation authorized |
-| grok-messages | 0.1.0 | `~/bin/grok-messages` → `~/Developer/grok-messages/bin/grok-messages` | `~/Developer/grok-messages` | ok, Automation authorized, history available |
+This checkout is the public monorepo https://github.com/PhillipHolland/apple-desk. Each CLI is `cli/<name>/bin/<name>`. Install links those files into `~/bin` and `~/.local/bin` when a link is missing or broken (`docs/INSTALL.md`). Versions below are the `VERSION` string in each CLI. Doctors were not re-run for this edit.
 
-Capability Host: `~/Applications/RemCTL Capability Host.app`, signed, protocol 2, Reminders + Automation + Full Disk Access authorized. Effective route `capabilityHost`, ready.
+| Tool | Source version | Path in this checkout |
+| --- | --- | --- |
+| grok-desk | 0.1.7 | `cli/grok-desk/bin/grok-desk` |
+| grok-reminders | 0.1.5 | `cli/grok-reminders/bin/grok-reminders` |
+| grok-notes | 0.2.3 | `cli/grok-notes/bin/grok-notes` |
+| grok-contacts | 0.1.3 | `cli/grok-contacts/bin/grok-contacts` |
+| grok-messages | 0.2.11 | `cli/grok-messages/bin/grok-messages` |
+| grok-calendar | 0.1.6 | `cli/grok-calendar/bin/grok-calendar` |
+| grok-shortcuts | 0.1.2 | `cli/grok-shortcuts/bin/grok-shortcuts` |
+| grok-mail | 0.1.3 | `cli/grok-mail/bin/grok-mail` |
+| grok-icloud | 0.1.1 | `cli/grok-icloud/bin/grok-icloud` |
+| grok-spotlight | 0.1.0 | `cli/grok-spotlight/bin/grok-spotlight` |
+| grok-focus | 0.1.1 | `cli/grok-focus/bin/grok-focus` |
+| grok-safari | 0.1.2 | `cli/grok-safari/bin/grok-safari` |
 
-None of the three `grok-*` trees has a `.git` directory or a remote. RemCTL stays an upstream binary. Do not vendor it into a public repo unless the license says so.
+There is no separate `~/Developer/grok-notes`, `~/Developer/grok-contacts`, or `~/Developer/grok-messages` tree in this checkout. RemCTL stays an upstream binary. Do not vendor it.
 
-## Safe reads this pass
+## Safe reads this pass (2026-10-03, not re-run)
+
+That day's `grok-notes`, `grok-contacts`, and `grok-messages` doctors were ok, with Automation authorized and Messages history available. Those binaries were pre-monorepo links under `~/Developer/grok-notes`, `~/Developer/grok-contacts`, and `~/Developer/grok-messages`, not `cli/` in this repo. RemCTL (`remctl` 2.3.0 at `~/bin/remctl`, also `remctl-permissions`) was an upstream MacStories install, doctor ok with 0 failures and 2 warnings. Capability Host was `~/Applications/RemCTL Capability Host.app`, signed, protocol 2, Reminders + Automation + Full Disk Access authorized, effective route `capabilityHost`, ready. Counts below are that snapshot.
 
 | Command | Time | Result |
 | --- | --- | --- |
@@ -51,14 +61,14 @@ Writes were not re-run. Create, edit, and delete commands are present in each CL
 
 ## CRUD present vs honest gaps
 
-Reminders (RemCTL hosted commands include add, edit, done, undone, delete, restore, lists, groups, sections, smart lists, templates, flag, search, today, upcoming, subtasks, move): broad CRUD. Not in this CLI: Apple Calendar, Mail. Sharing is read (`sharees`), not an invite flow verified here. Pinned list flag exists (`list-pin` / `list-unpin`).
+Reminders in this checkout are `grok-reminders` 0.1.5 (`lists`, `today`, `upcoming`, `search`, `show`, `add`, `done`, `delete`, `flag`, `move`). `add`, `flag`, and `move` stay dry-run unless `--force`. Sections and smart lists are not on this JXA path. The 2026-10-03 RemCTL binary is a separate upstream tool, not a CLI in this repo. Calendar and Mail are their own CLIs in `cli/`.
 
 Notes: create/edit/append/move/delete note and folder, checklist add, attachment list, share flag read, cached search. Cannot pin, lock, toggle checklist checked, duplicate, drawings/scans/tables/audio, attachment bytes, real tag objects, start a share. `pin`/`lock` commands exist and exit unsupported.
 
-Contacts: create/update/delete person, groups, membership. Cannot search by phone or email, merge, photos, vCard import/export, smart lists, Medical ID. `show` is the only command that returns phones and emails.
+Contacts: create/update/delete person, groups, membership. Phone, email, and relationship search use the index only. Cannot merge, photos, vCard import/export, smart lists, or Medical ID. `show` returns phones and emails.
 
-Messages: list, recent, search, dry-run, plain-text send to an existing scripting chat with `--force`, or a missing 1:1 when a phone or email handle and the first message were both named. That first message is the creation. Dry-run does not create a chat. Cannot make an empty chat, groups, attachments, tapbacks, effects, edits, unsends, pin/mute/read. History is chat.db, not AppleScript.
+Messages: list, recent, search, unread counts (no message text), attachment metadata, dry-run plain-text send, 1:1 `react` (dry-run unless `--force`), and `mark-read` (does not write `chat.db`). `--to` is 1:1. Groups need `--chat-guid`. A missing 1:1 is created only when `--to` is a phone or email and the text is non-empty, and only `--force` sends it. Cannot make an empty chat, effects, edits, unsends, or pin/mute. History is chat.db, not AppleScript.
 
 ## Packaging
 
-One skill: Apple Desk. When a public GitHub URL is shared, clone it to `~/Developer/apple-desk` and point `~/bin/grok-notes`, `grok-contacts`, and `grok-messages` at that checkout. Until then these three trees are the source. RemCTL stays `github.com/viticci/remctl` (credit MacStories / Viticci). Do not commit caches, chat.db, or contact exports. NotesCTL (Viticci) replaces grok-notes only after that repo is actually public.
+One skill: Apple Desk (`SKILL.md`). The public repo is https://github.com/PhillipHolland/apple-desk. Clone it to `~/Developer/apple-desk`. Symlinks in `~/bin` and `~/.local/bin` should point at `cli/<name>/bin/<name>` in that checkout. RemCTL stays `github.com/viticci/remctl` (credit MacStories / Viticci). Do not commit caches, chat.db, or contact exports.
