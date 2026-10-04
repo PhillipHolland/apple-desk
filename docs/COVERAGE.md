@@ -2,14 +2,14 @@
 
 Working-tree `--help` / `--version` on 2026-10-03. Any Mac. Not a release tag. Dirty trees from other writers are not product.
 
-Nothing below is an OSS wrap yet. Current CLIs are in-house. Next step is wrap the peer binary and keep the `grok-*` name, the local `~/.cache/grok-*` cache, and the write gate. Do not vendor source.
+Messages `react` is the first peer wrap (`imsg react`, 1:1, dry-run unless `--force`). The other CLIs below are still in-house. Next step is wrap the remaining peer binaries and keep the `grok-*` name, the local `~/.cache/grok-*` cache, and the write gate. Do not vendor source.
 
 ## Bones
 
 | CLI | Commands seen |
 | --- | --- |
 | `grok-desk` 0.1.7 | `doctor` `onboard` `reindex` `status` `search` `signature` `gaps` |
-| `grok-messages` 0.2.7 | `doctor` `chats` `list` `recent` `search` `send` `attachments` `unread` `mark-read` `gaps` |
+| `grok-messages` 0.2.8 | `doctor` `chats` `list` `recent` `search` `send` `attachments` `unread` `mark-read` `react` `gaps` |
 | `grok-calendar` 0.1.5 | `doctor` `calendars` `name-at` `list` `search` `show` `create` `update` `delete` `gaps` |
 | `grok-reminders` 0.1.4 | `doctor` `lists` `today` `upcoming` `search` `show` `add` `done` `delete` `gaps` |
 | `grok-contacts` 0.1.2 | `doctor` `search` `show` `groups` `list` `create` `update` `delete` `create-group` `delete-group` `add-to-group` `remove-from-group` `gaps` |
@@ -32,20 +32,20 @@ Nothing below is an OSS wrap yet. Current CLIs are in-house. Next step is wrap t
 
 - EventKit for calendar and reminders (`grok-eventkit`, calendar/reminders helpers). Do not treat as shipped. Shipped calendar/reminders commands above are still the JXA CLIs.
 
-## Tapbacks v1 (not implemented)
+## Tapbacks v1 (shipped)
 
-Design only. `grok-messages react` is not shipped.
+`grok-messages react` is shipped. It stays 1:1 only, and it is a dry-run unless `--force`.
 
-Dry-run prints the chat id, a likely last-message snippet, the reaction, and the exact command `imsg react --chat-id <rowid> --reaction <love|like|dislike|laugh|emphasis|question>`. `--force` runs that command once.
+Dry-run prints the chat rowid, a short last non-reaction snippet, the reaction, and the exact command `imsg react --chat-id <rowid> --reaction <love|like|dislike|laugh|emphasis|question>`. `--force` does not check the screen lock and does not activate Messages. It runs that command once. Screen lock does not block react.
 
-Wrap the `imsg` binary that implements `react` (source checkout `~/Developer/vendor/imsg`). Do not brew-install. Do not copy AppleScript. Do not call `imsg tapback`, `imsg launch`, or IMCore. `imsg react` hits the last-or-selected message, not a GUID. 1:1 only; v1 may refuse groups. No `chat.db` writes. Missing `imsg react` is a clean error, not an AppleScript fallback. `screen_locked` fails before UI.
+Wrap the `imsg` binary that implements `react` (`$GROK_MESSAGES_IMSG` when executable, else the source checkout `~/Developer/vendor/imsg` release binary). Do not brew-install. Do not copy AppleScript. Do not call `imsg tapback`, `imsg launch`, or IMCore. `imsg react` hits the last-or-selected message, not a GUID. Groups are refused. No `chat.db` writes. A missing binary is `missing_imsg` on `--force`, not an AppleScript fallback. `screen_locked` is mark-read only. React does not exit on a locked screen.
 
 ## Wrap (do not keep reinventing)
 
 | Peer feature | Now | Next |
 | --- | --- | --- |
 | imsg `chats` `history` `search` `watch` attachment paths | Reimplemented: `chats` `list` `recent` `search` `unread`; `attachments` is metadata only | Wrap `imsg` for those reads. Keep our send gate. |
-| imsg `send` (text and file) | Reimplemented: plain-text `send` only | Do not wrap file send until the same draft+yes gate exists. Reactions are Tapbacks v1 (design only, not implemented). |
+| imsg `send` (text and file) | Reimplemented: plain-text `send` only | Do not wrap file send until the same draft+yes gate exists. Reactions are Tapbacks v1: shipped 1:1 `react`, dry-run unless `--force`. |
 | imsg RPC, scheduled, chat background, IMCore/SIP | Not shipped | Deferred. IMCore/SIP is not a product path. Tapbacks do not call these. |
 | apple-tools `apple status` plus notes, mail, messages, contacts, reminders, calendar reads (MIT) | Reimplemented as `grok-desk status` and the JXA/cache CLIs | Wrap the MIT binaries behind `grok-*`. Their SQLite reads are the fast path. |
 | apple-tools phone recents; mail body search; contact phone/email search and vCard; notes export | Missing from our commands (`search --field phone\|email` is a known gap) | Wrap apple-tools. Do not write a second reader. |
@@ -68,6 +68,6 @@ Passwords, HomeKit, Photos, Freeform, and Safari. `grok-safari` 0.1.1 exists (`d
 5. Pick one of apple-pim or openclaw-apple-calendar for event CRUD. Do not ship three backends.
 6. `mark-read` is shipped (Messages UI: activate, then Mark as Read). It does not write `chat.db`.
 7. Missing vs peers: phone recents, mail body search, contact phone/email search, vCard, attachment file paths.
-8. Do not ship imsg file send or RPC without the draft+yes gate. Tapbacks v1 (`grok-messages react`) is design only.
+8. Do not ship imsg file send or RPC without the draft+yes gate. Tapbacks v1 (`grok-messages react`) is shipped as a 1:1 dry-run/`--force` wrap of `imsg react`.
 9. Passwords, HomeKit, Safari, Photos, and Freeform stay out of prod.
 10. apple-tools maps/geocode and apple-pim SMTP send stay deferred.

@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
 
 import db
 
-VERSION = "0.2.7"
+VERSION = "0.2.8"
 LIB = Path(__file__).resolve().parent / "messages.js"
 ALLOWLIST = Path.home() / ".config" / "grok-messages" / "allowlist"
 MAX_TEXT = 4000
@@ -19,7 +21,7 @@ GAPS = [
     "Messages 26 scripting can list chats (id, name, participants) and send text to an existing chat. It cannot read message history. History comes from ~/Library/Messages/chat.db and needs Full Disk Access for the process that runs this CLI (Grok Bot Helper when an agent runs it).",
     "Send only works for a chat currently in the Messages scripting list. Unknown-sender and junk chats are often absent there, so history can show them while send returns not_in_messages_ui. Nothing is sent in that case.",
     "send --to is a person only (phone, email, or a 1:1 chat). It never targets a group, even when that handle is a member of one. The send uses Messages' participant object (1:1). If the handle exists only in a group, send refuses and names that group's guid. Group sends require --chat-guid, which the user must name on purpose. This CLI does not create groups.",
-    "attachments lists metadata for one chat (name, mime, bytes, sticker, date). It does not download, open, or copy the file, and it does not return the absolute path. Send still cannot attach a file. No tapbacks, stickers-as-send, message effects, edits, unsends, or replies. Send is plain text only, capped at 4000 characters.",
+    "attachments lists metadata for one chat (name, mime, bytes, sticker, date). It does not download, open, or copy the file, and it does not return the absolute path. Send still cannot attach a file. react is a 1:1 wrap of imsg react (love, like, dislike, laugh, emphasis, question; emphasize means emphasis). It is a dry-run unless --force, has no --chat-guid, and refuses groups. --force does not check the screen lock and does not activate Messages. It runs imsg react once. Screen lock does not block react. It does not call imsg tapback, imsg launch, or IMCore, and it has no AppleScript fallback. Stickers-as-send, message effects, edits, unsends, and replies are still absent. Send is plain text only, capped at 4000 characters.",
     "No pin, mute, hide alerts, or Focus filter changes. mark-read does not write chat.db and does not use IMCore. With --force it makes Messages frontmost, then clicks an enabled Conversation > Mark All as Read. Activate alone is not success. It does not send.",
     "Search looks at the message text column only. Attachment-only rows and a few attributed-body-only rows have null text and will not match. Snippets are capped.",
     "Reactions are labeled (love, like, dislike, laugh, emphasize, question, emoji) from the row itself. The message that was reacted to is not pulled in.",
@@ -218,6 +220,7 @@ def cmd_doctor(args):
             print("allowlist: off (send still needs --force)")
         print("writes: send only with --force. mark-read --force clicks enabled Conversation > Mark All as Read after Messages is frontmost. No chat.db write.")
         print("send --to is 1:1 participant only; a group needs --chat-guid")
+        print("react is 1:1 only (no --chat-guid). Dry-run unless --force, which runs imsg react once. Screen lock does not block react.")
 
     emit(data, as_json, text)
 
@@ -687,6 +690,196 @@ def cmd_mark_read(args):
     emit(data, as_json, text)
 
 
+REACT_NAMES = {
+    "love": "love",
+    "like": "like",
+    "dislike": "dislike",
+    "laugh": "laugh",
+    "emphasis": "emphasis",
+    "emphasize": "emphasis",
+    "question": "question",
+}
+VENDOR_IMSG = str(Path.home() / "Developer/vendor/imsg/.build/arm64-apple-macosx/release/imsg")
+
+
+def _canonical_reaction(name: str) -> str | None:
+    return REACT_NAMES.get((name or "").strip().casefold())
+
+
+def _imsg_path() -> str | None:
+    """GROK_MESSAGES_IMSG when that file is executable, else the vendored imsg 0.15.10 build.
+
+    Never searches PATH or Homebrew. Those ship imsg 0.4.0, which has no react.
+    """
+    env = os.environ.get("GROK_MESSAGES_IMSG", "").strip()
+    if env and os.path.isfile(env) and os.access(env, os.X_OK):
+        return env
+    if os.path.isfile(VENDOR_IMSG) and os.access(VENDOR_IMSG, os.X_OK):
+        return VENDOR_IMSG
+    return None
+
+
+def _react_argv(rowid: int, reaction: str) -> list[str]:
+    binary = _imsg_path() or VENDOR_IMSG
+    return [binary, "react", "--chat-id", str(rowid), "--reaction", reaction]
+
+
+def _react_group_message(target: str, groups: list[dict]) -> str:
+    bits = []
+    for chat in groups[:8]:
+        label = (chat.get("name") or "").strip() or chat.get("identifier") or "(unnamed group)"
+        bits.append(f"{label} ({chat.get('guid')})")
+    listed = "; ".join(bits) if bits else "(no guid)"
+    extra = f" and {len(groups) - 8} more" if len(groups) > 8 else ""
+    return (
+        f"Refusing to react in {target!r}. That is not a 1:1 chat. "
+        f"It matches a group: {listed}{extra}. "
+        "Nothing was reacted. react does not take --chat-guid."
+    )
+
+
+def _react_refuses_group(chat: dict) -> bool:
+    if (chat.get("participantCount") or 0) > 1:
+        return True
+    if chat.get("style") == "group":
+        return True
+    return db.chat_is_group(chat)
+
+
+def _last_non_reaction_snippet(rows: list[dict]) -> str:
+    for msg in reversed(rows):
+        if msg.get("kind") == "reaction":
+            continue
+        body = msg.get("text") or ""
+        if not body and msg.get("hasAttachment"):
+            body = "[attachment]"
+        body = " ".join(str(body).split())
+        if body:
+            return body[:120]
+    return ""
+
+
+def cmd_react(args):
+    """1:1 tapback via imsg react. Dry-run unless --force. Never writes chat.db."""
+    as_json = args.json
+    reaction = _canonical_reaction(args.reaction)
+    if not reaction:
+        die(
+            2,
+            "unsupported",
+            "Unsupported reaction. Use love, like, dislike, laugh, emphasis, or question. emphasize is emphasis. Nothing was reacted.",
+            as_json,
+        )
+    to = (args.to or "").strip()
+    if not to:
+        die(2, "missing_target", "Pass --to for a 1:1 chat. react has no --chat-guid. Nothing was reacted.", as_json)
+
+    con = open_db(as_json)
+    try:
+        decision = db.resolve_person_for_send(con, to, args.service)
+        kind = decision.get("kind")
+        if kind == "ambiguous":
+            emit({
+                "ok": False,
+                "error": "ambiguous",
+                "message": f"{len(decision.get('matches') or [])} one-to-one chats match {to!r}. Pass --service. Groups are not candidates. Nothing was reacted.",
+                "matches": [
+                    {"name": c["name"], "identifier": c["identifier"], "guid": c["guid"], "service": c["service"], "filter": c["filter"], "style": c["style"]}
+                    for c in (decision.get("matches") or [])[:20]
+                ],
+            }, as_json, lambda d: None)
+        if kind == "group_only":
+            groups = decision.get("groups") or []
+            emit({
+                "ok": False,
+                "error": "refusing_group",
+                "message": _react_group_message(to, groups),
+                "groups": _group_brief(groups),
+            }, as_json, lambda d: None)
+        if kind != "direct" or not decision.get("chat"):
+            emit({
+                "ok": False,
+                "error": "not_found",
+                "message": f"No 1:1 chat matches {to!r}. Nothing was reacted. Group chats are ignored for --to.",
+            }, as_json, lambda d: None)
+        chat = decision["chat"]
+        if _react_refuses_group(chat):
+            emit({
+                "ok": False,
+                "error": "refusing_group",
+                "message": _react_group_message(to, [chat]),
+                "groups": _group_brief([chat]),
+            }, as_json, lambda d: None)
+        rows = db.recent(con, chat, 40)
+    finally:
+        con.close()
+
+    snippet = _last_non_reaction_snippet(rows)
+    argv = _react_argv(chat["rowid"], reaction)
+    shown = shlex.join(argv)
+    missing = _imsg_path() is None
+
+    if not args.force:
+        data = {
+            "ok": True,
+            "dryRun": True,
+            "reacted": False,
+            "sent": False,
+            "reaction": reaction,
+            "chatRowid": chat["rowid"],
+            "snippet": snippet,
+            "command": shown,
+            "imsg": argv[0],
+            "imsgMissing": missing,
+            "group": False,
+        }
+
+        def show(d):
+            print(f"dry-run: chat rowid {d['chatRowid']}  reaction {d['reaction']}")
+            print(f"snippet: {d.get('snippet') or '(no non-reaction message)'}")
+            print(d["command"])
+            if d.get("imsgMissing"):
+                print("missing: imsg binary is not executable")
+            print("nothing executed")
+
+        emit(data, as_json, show)
+        return
+
+    if missing:
+        die(
+            2,
+            "missing_imsg",
+            f"imsg react binary is missing ({argv[0]}). Nothing was reacted. No AppleScript fallback.",
+            as_json,
+        )
+
+    proc = subprocess.run(argv, capture_output=True, text=True)
+    if as_json:
+        payload = {
+            "ok": proc.returncode == 0,
+            "dryRun": False,
+            "reacted": proc.returncode == 0,
+            "sent": False,
+            "reaction": reaction,
+            "chatRowid": chat["rowid"],
+            "command": shown,
+            "exitCode": proc.returncode,
+            "stdout": proc.stdout,
+            "stderr": proc.stderr,
+        }
+        if proc.returncode != 0:
+            payload["error"] = "imsg_failed"
+            payload["message"] = (proc.stderr or proc.stdout or "imsg react failed").strip()[:500]
+        emit(payload, as_json, lambda d: None)
+        return
+    if proc.stdout:
+        sys.stdout.write(proc.stdout if proc.stdout.endswith("\n") else proc.stdout + "\n")
+    if proc.returncode != 0:
+        err = (proc.stderr or "").strip() or "imsg react failed"
+        die(proc.returncode or 1, "imsg_failed", err, False)
+    print(f"reacted {reaction} in chat {chat['rowid']}")
+
+
 def cmd_gaps(args):
     as_json = getattr(args, "json", False)
     data = {"ok": True, "tool": "grok-messages", "version": VERSION, "gaps": GAPS}
@@ -793,6 +986,32 @@ def build_parser():
     mark.add_argument("--service", choices=("iMessage", "SMS", "RCS"))
     mark.add_argument("--force", action="store_true", help="Actually drive Messages. Without this, the UI is not touched.")
     mark.set_defaults(func=cmd_mark_read)
+
+    react = sub.add_parser(
+        "react",
+        help="1:1 tapback via imsg react. Dry-run unless --force. Groups are refused.",
+        description=(
+            "Apply one standard tapback in a 1:1 chat by wrapping imsg react. "
+            "There is no --chat-guid. A group (participant count above 1, or group style) is refused. "
+            "With no --force this is a dry-run: it prints the chat rowid, a short last non-reaction snippet, "
+            "the reaction, and the exact imsg command, and it does not execute anything. "
+            "--force does not check the screen lock and does not activate Messages. It runs imsg react once. "
+            "Screen lock does not block react. "
+            "Reactions: love, like, dislike, laugh, emphasis, question. emphasize is emphasis. "
+            "Anything else exits 2 with error unsupported. "
+            "The binary is $GROK_MESSAGES_IMSG when that path is executable, otherwise the vendored imsg 0.15.10. "
+            "PATH and Homebrew imsg are not used. A missing binary still prints the command on dry-run; "
+            "--force exits missing_imsg. No AppleScript fallback. "
+            "This does not call imsg tapback, imsg launch, or IMCore, and it does not write chat.db."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    add_json(react)
+    react.add_argument("--to", required=True, help="Person only: phone, email, or a 1:1 chat name. Groups are refused.")
+    react.add_argument("--reaction", required=True, help="love, like, dislike, laugh, emphasis, or question. emphasize means emphasis.")
+    react.add_argument("--service", choices=("iMessage", "SMS", "RCS"), help="Limit --to to one service when several 1:1 chats match.")
+    react.add_argument("--force", action="store_true", help="Run imsg react once. Does not check the screen lock and does not activate Messages. Without this, dry-run only.")
+    react.set_defaults(func=cmd_react)
 
     gaps = sub.add_parser("gaps")
     add_json(gaps)

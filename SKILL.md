@@ -61,7 +61,7 @@ grok-desk signature --clear
 | 4 | Stop for one Allow click. |
 | 5 | Full Disk Access. |
 | -1712 | Quit and relaunch Messages once, then one send, then stop. |
-| screen_locked | Unlock, then one retry. Never loop. |
+| screen_locked | mark-read only. Unlock, then one retry. Never loop. react is not blocked. |
 
 ## Consent and Messages send
 
@@ -70,12 +70,12 @@ grok-desk signature --clear
 - **Group send** only with `--chat-guid` after the user named that group.
 - Send failures use the recovery card: **4** stops for one Allow click; **-1712** quits and relaunches Messages once, then one send, then stop.
 - Do not write `chat.db`. Read-only confirm of one outgoing row is ok after an approved send.
-- `mark-read` is the only UI path; it exits `screen_locked` before activate when locked.
+- `mark-read` exits `screen_locked` before activate when locked. `react --force` does not use that check and does not activate Messages. Screen lock does not block `imsg react`.
 - Deletes and other writes need `--force` and an id the user named.
 
-## Tapbacks v1 (not implemented)
+## Tapbacks v1 (shipped)
 
-`grok-messages react` is design-only. Dry-run prints the chat id, a likely last-message snippet, the reaction, and the exact command `imsg react --chat-id <rowid> --reaction <love|like|dislike|laugh|emphasis|question>`. `--force` runs that once. Wrap the `imsg` binary that implements `react` (source checkout `~/Developer/vendor/imsg`). Do not brew-install. Do not copy AppleScript. Do not call `imsg tapback`, `imsg launch`, or IMCore. `imsg react` hits the last-or-selected message, not a GUID. 1:1 only; v1 may refuse groups. No `chat.db` writes. Missing `imsg react` is a clean error, not an AppleScript fallback. `screen_locked` fails before UI.
+`grok-messages react` is shipped. It stays 1:1 only, and it is a dry-run unless `--force`. Dry-run prints the chat rowid, a short last non-reaction snippet, the reaction, and the exact command `imsg react --chat-id <rowid> --reaction <love|like|dislike|laugh|emphasis|question>`. `--force` does not check the screen lock and does not activate Messages. It runs that command once. Screen lock does not block react. Wrap the `imsg` binary that implements `react` (`$GROK_MESSAGES_IMSG` when executable, else the source checkout `~/Developer/vendor/imsg` release binary). Do not brew-install. Do not copy AppleScript. Do not call `imsg tapback`, `imsg launch`, or IMCore. `imsg react` hits the last-or-selected message, not a GUID. Groups are refused. No `chat.db` writes. A missing binary is `missing_imsg` on `--force`, not an AppleScript fallback. `screen_locked` is mark-read only. React does not exit on a locked screen.
 
 ## When not to use
 

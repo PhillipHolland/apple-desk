@@ -14,10 +14,11 @@ function run(argv) {
     return JSON.stringify({ok: false, error: "bad_request", message: "invalid JSON argv", sent: false, clicked: false});
   }
   var op = payload.op;
+  var lockOnly = op === "lock_only";
   var itemName = null;
   if (op === "mark_all") itemName = "Mark All as Read";
   else if (op === "mark_front") itemName = "Mark as Read";
-  else {
+  else if (!lockOnly) {
     return JSON.stringify({ok: false, error: "bad_request", message: "unsupported ui op", sent: false, clicked: false});
   }
 
@@ -92,6 +93,21 @@ function run(argv) {
       menuEnabled: false,
       clicked: false,
       attempts: 0
+    });
+  }
+
+  // Lock probe only. Do not open or activate Messages.
+  if (lockOnly) {
+    return JSON.stringify({
+      ok: true,
+      screenLocked: false,
+      sent: false,
+      wroteDatabase: false,
+      activated: false,
+      frontmost: false,
+      frontApp: state.frontApp,
+      clicked: false,
+      message: "Screen is unlocked. Messages was not activated."
     });
   }
 
