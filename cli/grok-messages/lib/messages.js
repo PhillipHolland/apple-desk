@@ -109,6 +109,78 @@ function run(argv) {
     return best;
   }
 
+  function accountForService(wanted) {
+    var accounts;
+    try { accounts = Messages.accounts; }
+    catch (e) { return null; }
+    var n = 0;
+    try { n = accounts.length; } catch (e2) { return null; }
+    var best = null;
+    var bestRank = 99;
+    for (var i = 0; i < n; i++) {
+      var account;
+      try { account = accounts[i]; } catch (e3) { continue; }
+      var name = serviceName(account);
+      if (wanted) {
+        if (matchesService(name, wanted)) return account;
+        continue;
+      }
+      var rank = rankService(name);
+      if (rank < bestRank) {
+        best = account;
+        bestRank = rank;
+      }
+    }
+    return best;
+  }
+
+  // Chats and participants are read-only in the dictionary. There is no empty-chat
+  // make. Addressing a participant by id and sending is the creation. One send.
+  function sendNewParticipant(who, text, service) {
+    var account = accountForService(service);
+    if (!account) {
+      return fail(
+        "not_in_messages_ui",
+        "No Messages account is available for that service. Nothing was sent and no chat was created. The scripting dictionary cannot make an empty chat, and Messages was not opened as a window."
+      );
+    }
+    var accountId = "";
+    try { accountId = String(account.id()); } catch (e) { accountId = ""; }
+    var normalized = normHandle(who);
+    var spec = null;
+    if (accountId && normalized) {
+      try { spec = account.participants.byId(accountId + ":" + normalized); }
+      catch (e1) { spec = null; }
+    }
+    if (!spec) {
+      try { spec = account.participants.byName(normalized); }
+      catch (e2) { spec = null; }
+    }
+    if (!spec) {
+      return fail(
+        "not_in_messages_ui",
+        "Messages scripting cannot address a new participant. Nothing was sent and no chat was created. No window was used."
+      );
+    }
+    var serviceLabel = serviceName(account);
+    try {
+      Messages.send(text, {to: spec});
+    } catch (e4) {
+      return fail(
+        "messages_error",
+        "Messages refused the first message, so no 1:1 chat was created. The scripting dictionary cannot make an empty chat, and nothing was retried. " + String(e4 && e4.message ? e4.message : e4)
+      );
+    }
+    return JSON.stringify({
+      ok: true,
+      sent: true,
+      created: true,
+      route: "new_participant",
+      handle: normalized,
+      service: serviceLabel
+    });
+  }
+
   function findChat(chatId) {
     var n = Messages.chats.length;
     for (var i = 0; i < n; i++) {
@@ -231,6 +303,10 @@ function run(argv) {
     // No participant object. Fall back only to a proven 1:1 chat, never a group.
     var directId = String(payload.directChatId || "");
     if (!directId) {
+      // Missing 1:1. The first message is the creation. Never a second send, never UI.
+      if (payload.createIfMissing) {
+        return sendNewParticipant(who, text, payload.service || null);
+      }
       return fail(
         "not_in_messages_ui",
         "No Messages participant matches that handle, and there is no 1:1 chat to use. Nothing was sent. A group that merely contains the handle is not a target."

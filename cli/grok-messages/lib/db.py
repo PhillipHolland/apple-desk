@@ -286,6 +286,35 @@ def _like(query: str) -> str:
     return f"%{escaped}%"
 
 
+def is_new_chat_handle(value: str) -> bool:
+    """True only for a phone or email handle.
+
+    A display name, a chat guid, and a group id are not handles.
+    Naming a handle is required before a missing 1:1 may be created.
+    """
+    raw = (value or "").strip()
+    if not raw or any(ch.isspace() for ch in raw):
+        return False
+    lowered = raw.lower()
+    if ";" in raw or lowered.startswith("chat"):
+        return False
+    if "@" in raw:
+        local, _, domain = raw.partition("@")
+        if not local or not domain or "@" in domain or "." not in domain:
+            return False
+        return True
+    if any(ch not in "+0123456789()-." for ch in raw):
+        return False
+    digits = "".join(ch for ch in raw if ch.isdigit())
+    if raw.startswith("+"):
+        return 8 <= len(digits) <= 15
+    if len(digits) == 10 and raw == digits:
+        return True
+    if len(digits) == 11 and digits.startswith("1") and raw == digits:
+        return True
+    return False
+
+
 def norm_handle(value: str) -> str:
     raw = value.strip()
     if "@" in raw:

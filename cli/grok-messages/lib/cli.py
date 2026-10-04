@@ -12,15 +12,15 @@ from pathlib import Path
 
 import db
 
-VERSION = "0.2.9"
+VERSION = "0.2.10"
 LIB = Path(__file__).resolve().parent / "messages.js"
 ALLOWLIST = Path.home() / ".config" / "grok-messages" / "allowlist"
 MAX_TEXT = 4000
 
 GAPS = [
     "Messages 26 scripting can list chats (id, name, participants) and send text to an existing chat. It cannot read message history. History comes from ~/Library/Messages/chat.db and needs Full Disk Access for the process that runs this CLI (Grok Bot Helper when an agent runs it).",
-    "Send only works for a chat currently in the Messages scripting list. Unknown-sender and junk chats are often absent there, so history can show them while send returns not_in_messages_ui. Nothing is sent in that case.",
-    "send --to is a person only (phone, email, or a 1:1 chat). It never targets a group, even when that handle is a member of one. The send uses Messages' participant object (1:1). If the handle exists only in a group, send refuses and names that group's guid. Group sends require --chat-guid, which the user must name on purpose. This CLI does not create groups.",
+    "Send to an existing chat uses the Messages scripting list. A missing 1:1 is the exception: when --to is a phone or email handle and the text is non-empty, --force sends one message, and that first message is what creates the chat. The scripting dictionary cannot make an empty chat. Dry-run does not send and does not create a chat. A display name with no 1:1 stays not_found. An existing 1:1 is reused. A group name or group guid is still refused. Unknown-sender and junk chats are often absent, so history can show them while a --chat-guid send returns not_in_messages_ui. Nothing is sent in that case.",
+    "send --to is a person only (phone, email, or a 1:1 chat). It never targets a group, even when that handle is a member of one. The send uses Messages' participant object (1:1). If the handle exists only in a group, send does not message that group. A phone or email handle plus text can start a separate 1:1; the group itself still needs --chat-guid. A group name or group guid is refused. This CLI does not create groups.",
     "attachments lists metadata for one chat (name, mime, bytes, sticker, date). Default output has no absolute path. --reveal-path prints the local absolute path already stored on the row and warns that it is a private file. It does not open, copy, upload, or search the disk. A row with no stored path says so and exits cleanly. Send still cannot attach a file. react is a 1:1 wrap of imsg react (love, like, dislike, laugh, emphasis, question; emphasize means emphasis). It is a dry-run unless --force, has no --chat-guid, and refuses groups. --force does not pre-check the screen lock and does not activate Messages. It runs imsg react once. Vendor imsg activates Messages and exits -2700 if it is not in front. It does not call imsg tapback, imsg launch, or IMCore, and it has no AppleScript fallback. Stickers-as-send, message effects, edits, unsends, and replies are still absent. Send is plain text only, capped at 4000 characters.",
     "No pin, mute, hide alerts, or Focus filter changes. mark-read does not write chat.db and does not use IMCore. With --force it makes Messages frontmost, then clicks an enabled Conversation > Mark All as Read. Activate alone is not success. It does not send.",
     "Search looks at the message text column only. Attachment-only rows and a few attributed-body-only rows have null text and will not match. Snippets are capped.",
@@ -220,6 +220,7 @@ def cmd_doctor(args):
             print("allowlist: off (send still needs --force)")
         print("writes: send only with --force. mark-read --force clicks enabled Conversation > Mark All as Read after Messages is frontmost. No chat.db write.")
         print("send --to is 1:1 participant only; a group needs --chat-guid")
+        print("missing 1:1: a phone or email handle plus text, and only --force. The first message is the creation. Dry-run does not create a chat.")
         print("react is 1:1 only (no --chat-guid). Dry-run unless --force, which runs imsg react once. The wrap does not pre-check the lock. Vendor imsg exits -2700 if Messages is not in front.")
 
     emit(data, as_json, text)
@@ -365,6 +366,34 @@ def _group_only_message(target: str, groups: list[dict]) -> str:
     )
 
 
+def _can_create_missing(target: str, decision: dict) -> bool:
+    """A missing 1:1 may be created only for a named handle.
+
+    A group name or a group guid is not a handle. An existing 1:1 is not missing.
+    The caller must also have passed a non-empty body; cmd_send checks that first.
+    """
+    if not db.is_new_chat_handle(target):
+        return False
+    kind = decision.get("kind")
+    if kind == "not_found":
+        return True
+    if kind == "group_only" and decision.get("reason") == "handle":
+        return True
+    return False
+
+
+def allowlist_allows_handle(handle: str) -> bool:
+    state = allowlist_state()
+    if not state["enabled"]:
+        return True
+    targets = state["targets"] or []
+    if not targets:
+        return False
+    wanted = {db.norm_handle(item) for item in targets}
+    wanted |= {item.strip() for item in targets}
+    return db.norm_handle(handle) in wanted or handle in wanted
+
+
 def cmd_send(args):
     as_json = args.json
     text = args.text if args.text is not None else ""
@@ -411,7 +440,7 @@ def cmd_send(args):
                         for c in (decision.get("matches") or [])[:20]
                     ],
                 }, as_json, lambda d: None)
-            if kind == "group_only":
+            if kind == "group_only" and not _can_create_missing(to, decision):
                 groups = decision.get("groups") or []
                 emit({
                     "ok": False,
@@ -419,26 +448,40 @@ def cmd_send(args):
                     "message": _group_only_message(to, groups),
                     "groups": _group_brief(groups),
                 }, as_json, lambda d: None)
-            if kind != "direct" or not decision.get("chat"):
+            if kind == "direct" and decision.get("chat"):
+                chat = decision["chat"]
+                if db.chat_is_group(chat):
+                    emit({
+                        "ok": False,
+                        "error": "refusing_group",
+                        "message": _group_only_message(to, [chat]),
+                        "groups": _group_brief([chat]),
+                    }, as_json, lambda d: None)
+                route = "participant"
+                handle = decision.get("handle")
+            elif _can_create_missing(to, decision):
+                # Text was already required. Do not create when the body is missing.
+                chat = None
+                route = "new_participant"
+                handle = db.norm_handle(to)
+            else:
                 emit({
                     "ok": False,
                     "error": "not_found",
-                    "message": f"No 1:1 chat matches {to!r}. Nothing was sent. Group chats are ignored for --to.",
+                    "message": f"No 1:1 chat matches {to!r}. Nothing was sent. A missing chat is created only for a phone or email handle with text. Group chats are ignored for --to.",
                 }, as_json, lambda d: None)
-            chat = decision["chat"]
-            if db.chat_is_group(chat):
-                emit({
-                    "ok": False,
-                    "error": "refusing_group",
-                    "message": _group_only_message(to, [chat]),
-                    "groups": _group_brief([chat]),
-                }, as_json, lambda d: None)
-            route = "participant"
-            handle = decision.get("handle")
     finally:
         con.close()
 
-    if not allowlist_allows(chat):
+    if route == "new_participant":
+        if not allowlist_allows_handle(handle):
+            die(
+                2,
+                "allowlist_blocked",
+                f"Send blocked by {ALLOWLIST}. Add this handle, or remove the file. Nothing was sent and no chat was created.",
+                as_json,
+            )
+    elif not allowlist_allows(chat):
         die(
             2,
             "allowlist_blocked",
@@ -446,20 +489,45 @@ def cmd_send(args):
             as_json,
         )
 
-    preview = {
-        "ok": True,
-        "sent": False,
-        "dryRun": True,
-        "route": route,
-        "chat": _chat_public(chat),
-        "textLength": len(text),
-        "group": db.chat_is_group(chat),
-    }
+    if route == "new_participant":
+        preview = {
+            "ok": True,
+            "sent": False,
+            "dryRun": True,
+            "created": False,
+            "wouldCreate": True,
+            "route": "new_participant",
+            "handle": handle,
+            "textLength": len(text),
+            "group": False,
+            "chat": None,
+            "createMeans": "first_message",
+        }
+    else:
+        preview = {
+            "ok": True,
+            "sent": False,
+            "dryRun": True,
+            "created": False,
+            "wouldCreate": False,
+            "route": route,
+            "chat": _chat_public(chat),
+            "textLength": len(text),
+            "group": db.chat_is_group(chat),
+        }
     if route == "participant":
         preview["handle"] = handle
         preview["group"] = False
     if args.dry_run or not args.force:
         # dry-run never calls Messages.send, even if --force was also passed.
+        # A missing chat stops here: no resolve, no send, no create.
+        if route == "new_participant":
+            def show_new(d):
+                print(f"dry-run: no 1:1 chat for {d.get('handle')}. The first message would create it ({d['textLength']} characters).")
+                print("nothing sent and no chat created")
+
+            emit(preview, as_json, show_new)
+            return
         if route == "participant":
             resolved = call_jxa({"op": "resolve_participant", "handle": handle, "service": chat.get("service")}, 45, as_json)
             preview["participantFound"] = bool(resolved.get("found"))
@@ -496,7 +564,15 @@ def cmd_send(args):
         emit(preview, as_json, show)
         return
 
-    if route == "participant":
+    if route == "new_participant":
+        result = call_send_jxa({
+            "op": "send_participant",
+            "handle": handle,
+            "service": args.service,
+            "text": text,
+            "createIfMissing": True,
+        }, 45, as_json)
+    elif route == "participant":
         result = call_send_jxa({
             "op": "send_participant",
             "handle": handle,
@@ -517,10 +593,17 @@ def cmd_send(args):
         "textLength": len(text),
         "group": bool(result.get("group")) if route == "chat" else False,
     }
-    if route == "participant":
+    if route in {"participant", "new_participant"}:
         data["handle"] = result.get("handle") or handle
+    if route == "new_participant":
+        data["created"] = bool(result.get("created"))
+        data["group"] = False
 
     def show_sent(d):
+        if d.get("route") == "new_participant" or not d.get("chat"):
+            created = "created the 1:1" if d.get("created") else "used an existing participant"
+            print(f"sent {d['textLength']} characters 1:1 to {d.get('handle')} ({created})")
+            return
         chat = d["chat"]
         label = chat.get("name") or chat.get("identifier") or chat.get("guid")
         if d["route"] == "participant":
@@ -954,12 +1037,15 @@ def build_parser():
         help="Send plain text. --to is 1:1 only. Groups need --chat-guid.",
         description=(
             "Send plain text through Messages.app's non-UI scripting path. It never activates Messages, clicks menus, waits for a frontmost window, or uses mark-read's screen_locked guard. The --to 1:1 path is participant-only; screen lock does not block send. On AppleEvent -1712 / exit 4, quit and relaunch Messages once, make one send attempt, then stop. Nothing is sent unless --force is set. "
-            "--dry-run never sends, even with --force. "
+            "--dry-run never sends and never creates a chat, even with --force. "
+            "A missing 1:1 is created only when --to is a phone or email handle and --text is non-empty. "
+            "The scripting dictionary cannot make an empty chat, so the first message is the creation, and only --force applies it. "
+            "An existing 1:1 is reused. A display name with no 1:1 is not_found. A group name or group guid is refused. "
             "--to is a person (phone, email, or the name of an existing 1:1 chat) and must never "
             "select a group, even when that handle is a member of one. The send goes to a Messages "
             "participant (one-to-one), not to a chat object that might be a group. "
-            "If the person only appears in a group, send refuses and prints that group's name and guid. "
-            "To message a group on purpose, pass --chat-guid with that exact guid. "
+            "If the person only appears in a group, that group is not the target. A phone or email handle plus text can start a separate 1:1, and only --force sends it. "
+            "A group name is refused. To message a group on purpose, pass --chat-guid with that exact guid. "
             "Do not pass both --to and --chat-guid. "
             "Agents must draft the recipient and the exact text and wait for an explicit yes before --force. "
             "Never send to a group unless the user named that group."
@@ -967,7 +1053,7 @@ def build_parser():
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     add_json(send)
-    send.add_argument("--to", help="Person only: phone, email, or a 1:1 chat name. Never a group.")
+    send.add_argument("--to", help="Person only: phone, email, or a 1:1 chat name. Never a group. A missing 1:1 needs a phone or email handle plus text.")
     send.add_argument("--chat-guid", help="Exact chat guid. The only way to send to a group, and only when that group was named.")
     send.add_argument("--text", help="Plain text to send. Required. Cap is 4000 characters.")
     send.add_argument("--service", choices=("iMessage", "SMS", "RCS"), help="Limit --to to one service when several 1:1 chats match.")

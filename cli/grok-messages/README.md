@@ -23,7 +23,9 @@ Add `--json` on any command except `gaps`. `unread` counts incoming rows with `i
 
 `send` does nothing unless `--force` is present. `--dry-run` resolves the target and does not send, even together with `--force`.
 
-`--to` is a person only (phone, email, or a 1:1 chat name). It never selects a group chat, including a group that merely contains that handle. The send uses a Messages `participant` (one-to-one). If the handle exists only in a group, send exits with `refusing_group` and prints that group's name and guid. Nothing is sent. To message a group on purpose, pass `--chat-guid` with the exact guid. Do not pass both `--to` and `--chat-guid`.
+`--to` is a person only (phone, email, or a 1:1 chat name). It never selects a group chat, including a group that merely contains that handle. The send uses a Messages `participant` (one-to-one). If the handle exists only in a group, that group is not the target. A phone or email handle plus text can start a separate 1:1. A group name still exits with `refusing_group`. To message a group on purpose, pass `--chat-guid` with the exact guid. Do not pass both `--to` and `--chat-guid`.
+
+A missing 1:1 is created only when `--to` is a phone or email handle and `--text` is non-empty. The Messages dictionary cannot make an empty chat (chats and participants are read-only), so the first message is the creation. `--dry-run` does not send and does not create a chat. `--force` is the only apply path, and it sends once. An existing 1:1 is reused and a second chat is not created. A display name with no 1:1 is still not found. A group name or a group guid is still refused. This does not open the Messages window.
 
 Agents must draft the recipient and the exact text and wait for an explicit yes before `--force`. Never send to a group unless the user named that group. If `grok-desk signature` is set, that line is part of the exact text. This CLI does not append it.
 

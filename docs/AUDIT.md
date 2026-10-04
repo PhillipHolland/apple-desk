@@ -57,7 +57,7 @@ Notes: create/edit/append/move/delete note and folder, checklist add, attachment
 
 Contacts: create/update/delete person, groups, membership. Cannot search by phone or email, merge, photos, vCard import/export, smart lists, Medical ID. `show` is the only command that returns phones and emails.
 
-Messages: list, recent, search, dry-run, plain-text send to an existing scripting chat with `--force`. Cannot new chats, groups, attachments, tapbacks, effects, edits, unsends, pin/mute/read. History is chat.db, not AppleScript.
+Messages: list, recent, search, dry-run, plain-text send to an existing scripting chat with `--force`, or a missing 1:1 when a phone or email handle and the first message were both named. That first message is the creation. Dry-run does not create a chat. Cannot make an empty chat, groups, attachments, tapbacks, effects, edits, unsends, pin/mute/read. History is chat.db, not AppleScript.
 
 ## Packaging
 
