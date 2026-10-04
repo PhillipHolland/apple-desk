@@ -13,7 +13,7 @@ Messages `react` is the first peer wrap (`imsg react`, 1:1, dry-run unless `--fo
 | `grok-calendar` 0.1.5 | `doctor` `calendars` `name-at` `list` `search` `show` `create` `update` `delete` `gaps` |
 | `grok-reminders` 0.1.4 | `doctor` `lists` `today` `upcoming` `search` `show` `add` `done` `delete` `gaps` |
 | `grok-contacts` 0.1.2 | `doctor` `search` `show` `groups` `list` `create` `update` `delete` `create-group` `delete-group` `add-to-group` `remove-from-group` `gaps` |
-| `grok-notes` 0.2.1 | `doctor` `folders` `list` `show` `search` `reindex` `status` `cache-clear` `tags` `create-note` `create-folder` `rename-folder` `delete-folder` `edit` `append` `move` `duplicate` `delete-note` `empty-trash` `attachments` `checklist` `share` `pin` `unpin` `lock` `unlock` `open` `gaps` |
+| `grok-notes` 0.2.2 | `doctor` `folders` `list` `show` `search` `reindex` `status` `cache-clear` `tags` `create-note` `create-folder` `rename-folder` `delete-folder` `edit` `append` `move` `duplicate` `delete-note` `empty-trash` `attachments` `checklist` `share` `pin` `unpin` `lock` `unlock` `open` `import-md` `export-md` `gaps` |
 | `grok-mail` 0.1.2 | `doctor` `accounts` `mailboxes` `list` `show` `search` `draft` `gaps` |
 | `grok-shortcuts` 0.1.2 | `doctor` `list` `create` `run` `gaps` |
 | `grok-icloud` 0.1.1 | `doctor` `ls` `tree` `find` `cat` `summary` `gaps` |

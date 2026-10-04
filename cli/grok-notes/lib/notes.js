@@ -5,7 +5,7 @@
  * User text arrives only as argv JSON. Do not interpolate it into this file.
  * Reads use bulk property fetches. Writes use make / delete / move.
  */
-var VERSION = "0.2.0";
+var VERSION = "0.2.2";
 var BODY_CAP = 200000;
 
 function run(argv) {
@@ -37,6 +37,7 @@ function dispatch(req) {
   if (cmd === "search") return searchLive(req);
   if (cmd === "export") return exportIndex(req);
   if (cmd === "create-note") return createNote(req);
+  if (cmd === "import-md") return importMarkdown(req);
   if (cmd === "create-folder") return createFolder(req);
   if (cmd === "rename-folder") return renameFolder(req);
   if (cmd === "delete-folder") return deleteFolder(req);
@@ -717,6 +718,34 @@ function htmlForCreate(req) {
     return plainToHtml(title + "\n\n" + req.body);
   }
   return plainToHtml(title);
+}
+
+function importMarkdown(req) {
+  if (!req.force) return fail("needs_force", "import-md requires --force");
+  if (!req.title) return fail("missing_title", "import-md needs a title");
+  if (!req.html) return fail("missing_body", "import-md needs note html");
+  var Notes = app();
+  var resolved = resolveNotes(Notes, {
+    title: req.title,
+    folder: req.folder || null,
+    account: req.account || null,
+    parent: req.parent || null
+  });
+  if (resolved.hit) {
+    var place = resolved.hit.place || {};
+    var where = (place.account || "?") + " / " + (place.path || place.folder || "?");
+    return fail("already_exists", "A note titled \"" + req.title + "\" already exists (" + where + "). import-md will not change it.");
+  }
+  if (resolved.error && resolved.error.error !== "not_found") return resolved.error;
+  var created = createNote({
+    title: req.title,
+    html: req.html,
+    folder: req.folder || null,
+    account: req.account || null,
+    parent: req.parent || null
+  });
+  if (created && created.ok) created.imported = true;
+  return created;
 }
 
 function createNote(req) {

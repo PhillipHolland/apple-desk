@@ -24,7 +24,7 @@ grok-desk onboard --guided
 | CLI | Role |
 | --- | --- |
 | `grok-reminders` | Reminders 0.1.4 (in-house; dry-run add; names-only doctor) |
-| `grok-notes` | Notes.app + search cache (0.2.1, `tags --folder`) |
+| `grok-notes` | Notes.app + search cache (0.2.2, `import-md` / `export-md`) |
 | `grok-contacts` | Contacts.app 0.1.2 (cache-first search/show; `--live` for Contacts.app) |
 | `grok-messages` | Messages 0.2.8 (shipped mark-read, history, unread, gated send, 1:1 react) |
 | `grok-calendar` | Calendar.app 0.1.5 (count-only doctor; cache-first list/search) |

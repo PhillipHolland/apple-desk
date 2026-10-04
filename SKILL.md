@@ -53,6 +53,10 @@ grok-desk signature --clear
 - `grok-notes search` (Notes automation)
 - `grok-reminders today` (Reminders automation)
 
+## Notes markdown
+
+`grok-notes import-md FILE` and `grok-notes export-md --out FILE` talk to Notes.app. Both are a dry-run unless `--force`. Import will not edit an existing title. Limits (heading depth, quotes, footnotes, images, drawings) are in `cli/grok-notes/README.md`.
+
 ## Recovery
 
 | Signal | Action |

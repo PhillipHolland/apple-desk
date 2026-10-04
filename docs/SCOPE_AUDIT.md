@@ -20,9 +20,11 @@ This file is a capability map. It does not include message text, phone numbers, 
 
 ## Each existing CLI
 
-### grok-notes (now 0.2.1)
+### grok-notes (now 0.2.2)
 
-Commands: `doctor`, `gaps`, `folders`, `list`, `show`, `search` (cache, or slow `--live`), `reindex`, `status`, `cache-clear`, `tags`, `create-note`, `create-folder`, `rename-folder`, `delete-folder`, `edit`, `append`, `move`, `duplicate`, `delete-note`, `empty-trash`, `attachments`, `checklist show|add`, `share`, `pin`/`unpin`/`lock`/`unlock` (exit unsupported), `open`.
+Commands: `doctor`, `gaps`, `folders`, `list`, `show`, `search` (cache, or slow `--live`), `reindex`, `status`, `cache-clear`, `tags`, `create-note`, `create-folder`, `rename-folder`, `delete-folder`, `edit`, `append`, `move`, `duplicate`, `delete-note`, `empty-trash`, `attachments`, `checklist show|add`, `share`, `pin`/`unpin`/`lock`/`unlock` (exit unsupported), `open`, `import-md`, `export-md`.
+
+`import-md` and `export-md` are a dry-run unless `--force`. They convert a Markdown subset through Notes HTML. File > Import Markdown and File > Export To > Markdown are not in the scripting dictionary. Limits are in `cli/grok-notes/README.md`.
 
 Feasibility: Notes.app JXA is the right layer on macOS 27. NoteStore.sqlite stays out. Hashtags are text, not tag objects.
 

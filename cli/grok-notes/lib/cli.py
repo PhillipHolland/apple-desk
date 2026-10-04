@@ -11,8 +11,9 @@ import sys
 from pathlib import Path
 
 import index as indexlib
+import markdown_notes
 
-VERSION = "0.2.1"
+VERSION = "0.2.2"
 ROOT = Path(__file__).resolve().parent.parent
 LIB = Path(__file__).resolve().parent / "notes.js"
 
@@ -28,6 +29,7 @@ GAPS = [
     "Recently Deleted is a real folder. delete-note moves a note there; delete-note --permanent or empty-trash --force deletes it for good. The app's Delete All UI is not a separate command.",
     "Duplicate is refused by Notes itself (error: Notes can not be copied) on Notes 4.13.",
     "NoteStore.sqlite is intentionally unused (Full Disk Access and schema risk). Club / Viticci NotesCTL is a different tool and is not installed here.",
+    "import-md and export-md convert a Markdown subset through Notes HTML. They are a dry-run unless --force. Import will not change an existing title. Export will not overwrite --out unless --replace. File > Import Markdown and File > Export To > Markdown are menu items only (not in the Notes 4.13 scripting dictionary). A checked round-trip kept three heading sizes, bullets, numbered lists, bold, italic, strike, links, simple pipe-table text, and fenced code. Level-4 headings match a subheading. A nested item is stored as a sibling list. Block quotes become paragraphs. Footnotes stay literal. Task markers stay list text, not a Notes checklist. Images become links, not attachments. Code-fence language is dropped. Drawings, scans, and named attachment bytes are omitted.",
 ]
 
 LI_RE = re.compile(r"<li\b([^>]*)>(.*?)</li>", re.I | re.S)
@@ -90,7 +92,7 @@ def call_jxa(payload, timeout, as_json):
 
 def emit(data, as_json, text_fn):
     if not data.get("ok", False):
-        code = 2 if data.get("error") in ("needs_force", "needs_allow_large", "unsupported", "missing_target", "missing_title", "missing_name", "missing_change", "missing_text", "missing_query", "missing_folder", "ambiguous", "bad_request") else 1
+        code = 2 if data.get("error") in ("needs_force", "needs_allow_large", "unsupported", "missing_target", "missing_title", "missing_name", "missing_change", "missing_text", "missing_query", "missing_folder", "ambiguous", "bad_request", "already_exists", "file_exists", "missing_path", "missing_out", "empty_markdown", "bad_encoding", "too_large") else 1
         if as_json:
             data.setdefault("tool", "grok-notes")
             data.setdefault("version", VERSION)
@@ -302,6 +304,64 @@ def print_gaps(_data=None):
     print("Cache: ~/.cache/grok-notes/index.sqlite holds plaintext so search does not walk Apple Events. It is mode 0600. grok-notes cache-clear deletes the cache only, not the notes.")
 
 
+def _print_warnings(data):
+    for warning in data.get("warnings") or []:
+        print(f"warning: {warning}", file=sys.stderr)
+
+
+def _stat_line(stats):
+    stats = stats or {}
+    return (
+        f"headings: {stats.get('headings', 0)}  "
+        f"bullets: {stats.get('bulletItems', 0)}  "
+        f"numbered: {stats.get('orderedItems', 0)}"
+    )
+
+
+def print_import_md(data):
+    _print_warnings(data)
+    if data.get("dryRun"):
+        print(f"dry-run: would import {data.get('file')} into Notes.app")
+        print(f"title: {data.get('title')}")
+        print(f"folder: {data.get('folderLabel')}")
+        print(f"account: {data.get('account') or 'default'}")
+        print(f"bytes: {data.get('bytes')}  {_stat_line(data.get('stats'))}")
+        print("bridge: Notes.app HTML. File > Import Markdown is not in the scripting dictionary.")
+        print(data.get("message") or "Pass --force to create the note.")
+        return
+    loc = " / ".join(x for x in (data.get("account"), data.get("path") or data.get("folder")) if x)
+    print(f"imported: {data.get('title')}")
+    if loc:
+        print(loc)
+    if data.get("id"):
+        print(f"id: {data.get('id')}")
+    print(f"file: {data.get('file')}")
+    stale_note()
+
+
+def print_export_md(data):
+    _print_warnings(data)
+    if data.get("dryRun"):
+        print(f"dry-run: would write {data.get('file')}")
+        print(f"title: {data.get('title')}")
+        if data.get("id"):
+            print(f"id: {data.get('id')}")
+        loc = " / ".join(x for x in (data.get("account"), data.get("folder")) if x)
+        if loc:
+            print(loc)
+        print(f"markdown bytes: {data.get('bytes')}  {_stat_line(data.get('stats'))}")
+        print("bridge: Notes.app HTML. File > Export To > Markdown is not in the scripting dictionary.")
+        if data.get("wouldRefuse"):
+            print(data.get("wouldRefuse"))
+        print(data.get("message") or "Notes was read and not changed. Pass --force to write the file.")
+        return
+    print(f"exported: {data.get('title')}")
+    if data.get("id"):
+        print(f"id: {data.get('id')}")
+    print(f"file: {data.get('file')}")
+    print(f"bytes: {data.get('bytes')}")
+
+
 def add_target(p):
     p.add_argument("title", nargs="?", help="exact note title")
     p.add_argument("--title", dest="title_flag", help="exact note title")
@@ -416,7 +476,150 @@ def build_parser():
         add_target(p)
     p = sub.add_parser("open", parents=[parent], help="reveal the note in Notes (focuses the app)")
     add_target(p)
+    p = sub.add_parser("import-md", parents=[parent], help="import a markdown file into Notes (dry-run unless --force)")
+    p.add_argument("path", help="markdown file to import")
+    p.add_argument("--title", help="note title; default is the first heading or the file name")
+    p.add_argument("--folder")
+    p.add_argument("--account")
+    p.add_argument("--parent")
+    p.add_argument("--force", action="store_true", help="create the note; without this, Notes is not called")
+    p = sub.add_parser("export-md", parents=[parent], help="export one note to a markdown file (dry-run unless --force)")
+    add_target(p)
+    p.add_argument("--out", required=True, help="markdown file to write")
+    p.add_argument("--force", action="store_true", help="write --out; without this, the note is only read")
+    p.add_argument("--replace", action="store_true", help="overwrite --out if it already exists")
     return parser
+
+
+def cmd_import_md(args, as_json):
+    path = Path(args.path).expanduser()
+    if not path.is_file():
+        die(2, "missing_path", f"No markdown file at {path}", as_json)
+    if path.stat().st_size > 400_000:
+        die(2, "too_large", "Markdown file is over 400000 bytes.", as_json)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        die(2, "bad_encoding", "Markdown file is not UTF-8.", as_json)
+    converted = markdown_notes.markdown_to_notes_html(text, title=args.title, fallback_title=path.stem)
+    if not converted.get("ok"):
+        die(2, converted.get("error") or "bad_markdown", converted.get("message") or "Could not read that markdown.", as_json)
+    summary = {
+        "ok": True,
+        "tool": "grok-notes",
+        "version": VERSION,
+        "command": "import-md",
+        "dryRun": not args.force,
+        "file": str(path.resolve()),
+        "title": converted["title"],
+        "folder": args.folder,
+        "folderLabel": args.folder or "account default",
+        "account": args.account,
+        "parent": args.parent,
+        "bytes": len(text.encode("utf-8")),
+        "stats": converted.get("stats") or {},
+        "warnings": converted.get("warnings") or [],
+        "bridge": "notes-html",
+    }
+    if not args.force:
+        summary["message"] = "Notes.app was not called. Pass --force to create the note."
+        emit(summary, as_json, print_import_md)
+        return 0
+    data = call_jxa(
+        {
+            "cmd": "import-md",
+            "title": converted["title"],
+            "html": converted["html"],
+            "force": True,
+            "folder": args.folder,
+            "account": args.account,
+            "parent": args.parent,
+        },
+        90,
+        as_json,
+    )
+    if data.get("ok"):
+        data.update({
+            "tool": "grok-notes",
+            "version": VERSION,
+            "command": "import-md",
+            "dryRun": False,
+            "file": summary["file"],
+            "warnings": summary["warnings"],
+            "stats": summary["stats"],
+            "bridge": "notes-html",
+        })
+    emit(data, as_json, print_import_md)
+    return 0
+
+
+def cmd_export_md(args, as_json):
+    out = Path(args.out).expanduser()
+    if not str(args.out).strip():
+        die(2, "missing_out", "export-md needs --out.", as_json)
+    if out.exists() and out.is_dir():
+        die(2, "file_exists", f"{out} is a directory.", as_json)
+    if out.parent and not out.parent.is_dir():
+        die(2, "missing_path", f"Directory does not exist: {out.parent}", as_json)
+    title = getattr(args, "title_flag", None) or getattr(args, "title", None)
+    if not getattr(args, "id", None) and not title:
+        die(2, "missing_target", "export-md needs --id or a title.", as_json)
+    payload = target_payload(args, "show")
+    payload["full"] = True
+    data = call_jxa(payload, 90, as_json)
+    if not data.get("ok"):
+        emit(data, as_json, print_export_md)
+        return 0
+    notes = data.get("notes") or []
+    if not notes:
+        die(1, "not_found", "No note with that exact title or id.", as_json)
+    note = notes[0]
+    if note.get("locked"):
+        die(1, "locked", "Note is password protected. export-md does not read it.", as_json)
+    converted = markdown_notes.notes_html_to_markdown(note.get("html") or "", title=note.get("title"))
+    warnings = list(converted.get("warnings") or [])
+    named = [a.get("name") for a in (note.get("attachments") or []) if a.get("name")]
+    if named:
+        warnings.append("Omitted attachments: " + ", ".join(named) + ". Drawings, scans, and files are not written into the markdown.")
+    markdown = converted.get("markdown") or ""
+    exists = out.exists()
+    summary = {
+        "ok": True,
+        "tool": "grok-notes",
+        "version": VERSION,
+        "command": "export-md",
+        "dryRun": not args.force,
+        "file": str(out.resolve()),
+        "title": note.get("title"),
+        "id": note.get("id"),
+        "account": note.get("account"),
+        "folder": note.get("folder"),
+        "path": note.get("path"),
+        "bytes": len(markdown.encode("utf-8")),
+        "stats": converted.get("stats") or {},
+        "warnings": warnings,
+        "bridge": "notes-html",
+    }
+    if exists and not args.replace:
+        summary["wouldRefuse"] = f"{out} already exists. Pass --replace with --force to overwrite it."
+    if not args.force:
+        summary["message"] = "Notes was read and not changed. Pass --force to write the file."
+        emit(summary, as_json, print_export_md)
+        return 0
+    if exists and not args.replace:
+        die(2, "file_exists", f"{out} already exists. Pass --replace to overwrite it.", as_json)
+    tmp = out.with_name(out.name + ".grok-notes-tmp")
+    try:
+        tmp.write_text(markdown, encoding="utf-8")
+        tmp.replace(out)
+    except OSError as exc:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        die(1, "write_failed", str(exc), as_json)
+    emit(summary, as_json, print_export_md)
+    return 0
 
 
 def target_payload(args, cmd):
@@ -475,6 +678,10 @@ def main(argv=None):
         data = indexlib.cached_folders()
         emit(data, as_json, print_folders)
         return 0
+    if args.cmd == "import-md":
+        return cmd_import_md(args, as_json)
+    if args.cmd == "export-md":
+        return cmd_export_md(args, as_json)
 
     payload = {"cmd": args.cmd}
     timeout = 60
