@@ -15,7 +15,7 @@ This file names patterns we learn from. It is not a license to vendor their tree
 - Repo: https://github.com/danielhopkins/apple-tools
 - Patterns absorbed: one `status` across tools; permission probes that do not prompt; local-only CLIs; Calendar/Contacts/Reminders as first-class agent tools; honest TCC states (including Calendar “Add Only”).
 - Apple Desk mapping: `grok-desk status` is the unified rollup (caches + doctor probes); each `grok-* doctor` stays lean and portable under `~/.cache/grok-*`.
-- Refused: vendoring apple-tools binaries or Swift sources into this private repo.
+- Refused: vendoring apple-tools binaries or Swift sources into this repo.
 
 ## omarshahine/apple-pim (EventKit)
 

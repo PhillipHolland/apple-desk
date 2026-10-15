@@ -2,7 +2,7 @@
 
 Local Apple Reminders CLI. Talks to Reminders.app with `osascript -l JavaScript`. **Not RemCTL**, not EventKit, not a cloud API.
 
-**Status (0.1.5):** Code hardened AFK. Apple Event calls hard-timeout at 20–25s (exit 4 `automation_timeout`). Doctor was blocked on Automation Allow as of 2026-10-03 — do not retry doctor in a loop while AFK. After you click Allow (System Settings → Privacy & Security → Automation → Grok Bot / Grok Bot Helper → Reminders), run `doctor` once.
+**Status (0.1.6):** Code hardened AFK. Apple Event calls hard-timeout at 20–25s (exit 4 `automation_timeout`). Doctor was blocked on Automation Allow as of 2026-10-03 — do not retry doctor in a loop while AFK. After you click Allow (System Settings → Privacy & Security → Automation → Grok Bot / Grok Bot Helper → Reminders), run `doctor` once.
 
 ```bash
 grok-reminders doctor

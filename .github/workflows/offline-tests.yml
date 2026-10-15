@@ -1,0 +1,18 @@
+name: Offline tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Show Python
+        run: python3 --version
+      - name: Run offline tests
+        run: ./scripts/test.sh
+        env:
+          GROK_DESK_NO_TELEMETRY: "1"

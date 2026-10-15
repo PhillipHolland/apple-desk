@@ -121,7 +121,10 @@ def main() -> None:
     real_link_dir.mkdir()
     (real_link_dir / "grok-desk").symlink_to(real_desk)
 
-    check("checkout root is this repo", common.checkout_root().name == "apple-desk")
+    check(
+        "checkout root is this repo",
+        (common.checkout_root() / "cli" / "grok-desk" / "lib" / "common.py").is_file(),
+    )
     check("fake root is not the live home", LIVE_HOME not in str(ROOT) and str(FAKE_HOME) != LIVE_HOME)
 
     before = snapshot(ROOT)

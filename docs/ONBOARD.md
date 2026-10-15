@@ -8,11 +8,17 @@ Use this when a bot (or a human) is wiring Apple Desk on a Mac for the first tim
 grok-desk onboard --guided
 # JSON for agents:
 grok-desk onboard --guided --json
+# Same gates, skip the long Calendar/Notes/Reminders index:
+grok-desk onboard --guided --quick
 # Opt in to contacts phone/email cache during the final reindex:
 grok-desk onboard --guided --index-contacts
 ```
 
 Plain `grok-desk onboard` still links missing bins, runs the short safe doctor rollup, and reindexes. `--guided` is the bot-friendly walk that **stops at the first failing gate** and prints the exact System Settings path.
+
+Human mode prints each gate to stderr as it starts, for example `[5/11] Automation → Calendar  (usually a few seconds)` and `[11/11] Local reindex  (often several minutes; calendar can take 20+ minutes. Use --quick to skip that walk)`. `--json` keeps stdout as one JSON object and does not print those step lines.
+
+`--quick` does **not** change gate order or exit codes. It only changes gate 11: Messages metadata is indexed; notes, calendar, and reminders are recorded as `skipped_quick`. Run `grok-desk reindex` later for the full caches. `grok-desk reindex --quick --only calendar` narrows the calendar window to the past 7 days through the next 7 days.
 
 Re-run the same command after the user clicks Allow. Passing gates are skipped. There is no AFK retry loop inside the command.
 

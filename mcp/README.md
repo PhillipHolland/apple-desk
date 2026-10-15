@@ -1,3 +1,3 @@
 # apple-desk-mcp
 
-Single MCP server planned here (`reminders.*`, `notes.*`, `contacts.*`, `messages.*`, later `icloud.*` / Google facades). Not implemented in this first push — CLIs land first.
+**Roadmap (not built).** A single MCP server is planned here (`reminders.*`, `notes.*`, `contacts.*`, `messages.*`, later `icloud.*` / Google facades). Nothing in this directory is implemented. Use the `grok-*` CLIs today.

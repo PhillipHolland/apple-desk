@@ -2,13 +2,30 @@
 
 Clone or pull this repo, link the CLIs onto your PATH, then run a first doctor pass. No sudo.
 
-Repo URL (public-shaped; may still be private until release):
+Repo URL:
 
 ```text
 https://github.com/PhillipHolland/apple-desk
 ```
 
-## Clone or pull
+## One-line install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/PhillipHolland/apple-desk/main/scripts/install.sh | bash
+```
+
+That script clones or `git pull --ff-only` into `~/Developer/apple-desk`, runs `scripts/onboard.sh`, and adds `~/bin` and `~/.local/bin` to PATH in one shell rc (idempotent; no sudo). A stale `~/bin/grok-desk` symlink is replaced with this checkout's binary.
+
+Then open a new terminal (or `export PATH="$HOME/bin:$HOME/.local/bin:$PATH"`) and:
+
+```bash
+grok-desk onboard --guided --quick
+grok-messages unread
+```
+
+Override the clone location with `APPLE_DESK_HOME`. Opt out of the anonymous onboard ping with `GROK_DESK_NO_TELEMETRY=1`.
+
+## Clone or pull (manual)
 
 ```bash
 mkdir -p ~/Developer
@@ -31,7 +48,7 @@ Do not invent a different clone URL. Do not copy RemCTL, NotesCTL, or other thir
 # ./scripts/onboard.sh --index-contacts
 ```
 
-That script links each `cli/*/bin/grok-*` into `~/bin` and `~/.local/bin` when the link is missing or broken, then runs `grok-desk onboard`.
+That script links each `cli/*/bin/grok-*` into `~/bin` and `~/.local/bin` when the link is missing, broken, or (for `grok-desk`) stale, then runs `grok-desk onboard`.
 
 Manual equivalent:
 
@@ -47,6 +64,8 @@ for name in grok-reminders grok-notes grok-contacts grok-messages grok-calendar 
   ln -sfn "$src" "$HOME/.local/bin/$name"
 done
 ```
+
+All twelve CLIs in `cli/` are: `grok-desk`, `grok-messages`, `grok-notes`, `grok-reminders`, `grok-calendar`, `grok-contacts`, `grok-shortcuts`, `grok-mail`, `grok-icloud`, `grok-spotlight`, `grok-focus`, `grok-safari`.
 
 ## PATH
 
@@ -78,14 +97,22 @@ Run each once. Do not loop on exit 3, 4, or 5 while AFK.
 | calendar | `grok-calendar doctor --json` | count-only lean doctor |
 | shortcuts | `grok-shortcuts doctor --json` | list ok |
 | icloud | `grok-icloud doctor --json` | CloudDocs readable |
+| focus | `grok-focus doctor --json` | best-effort Focus DB |
+| safari | `grok-safari doctor --json` | Bookmarks.plist readable |
+| spotlight | `grok-spotlight doctor --json` | `mdfind` present |
+| mail | `grok-mail --version` | version only; Mail doctor can hang |
 
 Guided Mac permissions (one gate at a time):
 
 ```bash
 grok-desk onboard --guided
+# same gates, skip the long Calendar/Notes/Reminders index:
+grok-desk onboard --guided --quick
 ```
 
 See [ONBOARD.md](./ONBOARD.md).
+
+There is no MCP server in this repo. That is roadmap, not built.
 
 ## What stays private (never commit, never upload)
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""grok-desk 0.1.9 — onboard a Mac and build local search indexes.
+"""grok-desk 0.1.10 — onboard a Mac and build local search indexes.
 
 Caches stay under ~/.cache (0700 dirs, 0600 databases). Nothing is uploaded
 except one optional anonymous onboard-ok request, once, after a successful
@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sqlite3
 import sys
 from pathlib import Path
@@ -35,12 +36,19 @@ SAFE_DOCTORS = (
     "grok-safari",
 )
 SURFACES = ("notes", "messages", "contacts", "calendar", "reminders")
+# Guided onboard walks these 11 gates in this order. Do not reorder.
+GUIDED_GATE_TOTAL = 11
+QUICK_INDEX_SURFACES = ("messages",)
+QUICK_SKIP_SURFACES = ("notes", "calendar", "reminders")
+QUICK_CALENDAR_PAST_DAYS = 7
+QUICK_CALENDAR_FUTURE_DAYS = 7
 
 GAPS = [
     "Indexes are local SQLite files under ~/.cache. grok-desk never uploads them and never copies chat.db.",
     "Notes uses the existing grok-notes cache (~/.cache/grok-notes/index.sqlite). There is no second notes database. Default reindex stores titles, folders, and dates only and does not keep note bodies in that index. --index-bodies stores note bodies and keeps bodies already stored. That file is as sensitive as Notes.app. grok-notes cache-clear deletes it.",
     "Messages stores chat guid, display name, group flag, service, last date, and message count. Default reindex does not store message text and drops any message text already in that index. --index-bodies adds an FTS index of message text when Full Disk Access allows the read, and it keeps rows already stored. ~/.cache/grok-messages is as sensitive as Messages when bodies were indexed. Removing that directory removes the copy. There is no grok-messages cache-clear. Send rules are unchanged: grok-messages --to is 1:1 only; groups need --chat-guid. Send still needs --force --confirm.",
     "The contacts cache (id, name, org, phones, emails) is off unless onboard --index-contacts or reindex --only contacts. It is not built by a normal onboard.",
+    "grok-desk onboard --guided prints [n/11] step progress on stderr in human mode. --json does not. --quick keeps the same gates and exit codes and skips notes, calendar, and reminders indexing.",
     "Calendar reindex runs grok-calendar doctor once. When that is authorized it stores calendar names and events in a portable window: past 30 days through the next 90 days (override with --past-days/--future-days or GROK_CALENDAR_PAST_DAYS and GROK_CALENDAR_FUTURE_DAYS, each 0..366). One calendar index at a time (uid, title, start, end, all-day, calendar name). Only the Apple system calendar titled Scheduled Reminders is skipped by name. A wide window that times out is read in 14-day slices, and each slice is retried once. A slice over 800 events is split further by date. Doctor timeout or denied Automation sets pending_allow and is not retried. Locations and notes are not stored. grok-calendar list/search and grok-desk search read this cache first.",
     "Reminders reindex runs a names-only doctor, lean lists, then one incomplete-only collect (id, list, title, due). Notes are not stored. Timeout or denied Automation sets pending_allow and is not retried. Mail is not indexed. Focus and Safari are probed by doctor and are not part of this index.",
     "Keychain, Passwords, and HomeKit are out on purpose.",
@@ -266,18 +274,48 @@ def reindex_surface(name: str, full: bool, index_contacts: bool, past_days: int 
     return {"ok": False, "surface": name, "error": "unknown_surface"}
 
 
-def do_reindex(full: bool, only: str | None, index_contacts: bool, past_days: int | None = None, future_days: int | None = None, index_bodies: bool = False) -> dict:
+def emit_progress(step: int, title: str, hint: str | None = None, enabled: bool = False) -> None:
+    """Human-mode step line on stderr. Never writes stdout (so --json stays clean)."""
+    if not enabled:
+        return
+    line = f"[{step}/{GUIDED_GATE_TOTAL}] {title}"
+    if hint:
+        line += f"  ({hint})"
+    print(line, file=sys.stderr, flush=True)
+
+
+def do_reindex(full: bool, only: str | None, index_contacts: bool, past_days: int | None = None, future_days: int | None = None, index_bodies: bool = False, quick: bool = False) -> dict:
     if only:
         names = [only]
         if only == "contacts":
             index_contacts = True
+    elif quick:
+        names = list(QUICK_INDEX_SURFACES)
+        if index_contacts:
+            names.append("contacts")
     else:
         names = ["notes", "messages", "calendar", "reminders"]
         if index_contacts:
             names.append("contacts")
-    indexes = [reindex_surface(name, full, index_contacts, past_days, future_days, index_bodies) for name in names]
+    cal_past, cal_future = past_days, future_days
+    if quick and "calendar" in names:
+        if cal_past is None:
+            cal_past = QUICK_CALENDAR_PAST_DAYS
+        if cal_future is None:
+            cal_future = QUICK_CALENDAR_FUTURE_DAYS
+    indexes = [reindex_surface(name, full, index_contacts, cal_past, cal_future, index_bodies) for name in names]
+    if quick and not only:
+        indexed = {item.get("surface") for item in indexes}
+        for surface in QUICK_SKIP_SURFACES:
+            if surface not in indexed:
+                indexes.append({
+                    "ok": True,
+                    "surface": surface,
+                    "status": "skipped_quick",
+                    "message": "Skipped in --quick. Run grok-desk reindex --only %s for a full index." % surface,
+                })
     ok = all(item.get("ok") for item in indexes)
-    return {"ok": ok, "tool": common.TOOL, "version": VERSION, "indexes": indexes}
+    return {"ok": ok, "tool": common.TOOL, "version": VERSION, "indexes": indexes, "quick": bool(quick)}
 
 
 def safe_doctors() -> list[dict]:
@@ -477,10 +515,12 @@ def _run_surface_doctor(bin_name: str, timeout: float, extra_args: list[str] | N
     }
 
 
-def do_guided_onboard(index_contacts: bool, skip_optional: bool = False, skip_signature: bool = False, index_bodies: bool = False) -> tuple[dict, int]:
+def do_guided_onboard(index_contacts: bool, skip_optional: bool = False, skip_signature: bool = False, index_bodies: bool = False, quick: bool = False, progress: bool = False) -> tuple[dict, int]:
     """Walk permission gates one-by-one. Stop at first hard failure.
 
     Returns (payload, process_exit_code). Re-run after the user clicks Allow.
+    Gate order and exit codes stay the same with --quick. --quick only
+    changes what reindex (gate 11) builds.
     """
     links = [common.link_if_needed(name) for name in ("grok-desk",) + common.TOOLS]
     gates: list[dict] = []
@@ -491,21 +531,26 @@ def do_guided_onboard(index_contacts: bool, skip_optional: bool = False, skip_si
         stopped = gate
         gates.append(gate)
         code = int(gate.get("exitCode") or 1)
+        hint = "Fix the Settings path above, then re-run: grok-desk onboard --guided"
+        if quick:
+            hint += " --quick"
         payload = {
             "ok": False,
             "tool": common.TOOL,
             "version": VERSION,
             "mode": "guided",
+            "quick": bool(quick),
             "links": links,
             "gates": gates,
             "stoppedAt": gate.get("id"),
             "nextSettingsPath": gate.get("settingsPath"),
             "message": gate.get("message"),
-            "hint": "Fix the Settings path above, then re-run: grok-desk onboard --guided",
+            "hint": hint,
         }
         return payload, code
 
     # 1) Messages history — Full Disk Access
+    emit_progress(1, "Full Disk Access (Messages history)", "usually a few seconds", progress)
     msg = _run_surface_doctor("grok-messages", 8)
     hist = msg.get("doctor") or {}
     history = hist.get("history") if isinstance(hist.get("history"), dict) else {}
@@ -549,6 +594,7 @@ def do_guided_onboard(index_contacts: bool, skip_optional: bool = False, skip_si
     })
 
     # 2) Messages Automation
+    emit_progress(2, "Automation → Messages", "usually a few seconds", progress)
     auto = (msg.get("automation") or (msg.get("doctor") or {}).get("automation") or "")
     if not msg.get("ok") or str(auto).lower() not in {"authorized", "ok", "allowed", ""}:
         # empty automation with ok=true still counts as pass (older CLIs)
@@ -583,13 +629,14 @@ def do_guided_onboard(index_contacts: bool, skip_optional: bool = False, skip_si
 
     # 3–7 required app gates
     required = [
-        ("notes", "grok-notes", 8, None, "Notes", "Notes.app folders and note bodies."),
-        ("contacts", "grok-contacts", 12, ["--live"], "Contacts", "Live Contacts.app (cache-only doctor is not this gate)."),
-        ("calendar", "grok-calendar", 10, None, "Calendar", "Calendar.app lean doctor (count-only)."),
-        ("reminders", "grok-reminders", 10, None, "Reminders", "Reminders.app lean doctor (names-only)."),
-        ("shortcuts", "grok-shortcuts", 8, None, "Shortcuts", "List shortcuts via /usr/bin/shortcuts."),
+        ("notes", "grok-notes", 8, None, "Notes", "Notes.app folders and note bodies.", 3, "usually a few seconds"),
+        ("contacts", "grok-contacts", 12, ["--live"], "Contacts", "Live Contacts.app (cache-only doctor is not this gate).", 4, "may open Contacts.app"),
+        ("calendar", "grok-calendar", 10, None, "Calendar", "Calendar.app lean doctor (count-only).", 5, "usually a few seconds"),
+        ("reminders", "grok-reminders", 10, None, "Reminders", "Reminders.app lean doctor (names-only).", 6, "usually a few seconds"),
+        ("shortcuts", "grok-shortcuts", 8, None, "Shortcuts", "List shortcuts via /usr/bin/shortcuts.", 7, "usually a few seconds"),
     ]
-    for gid, bin_name, timeout, extra, app, why in required:
+    for gid, bin_name, timeout, extra, app, why, step, hint in required:
+        emit_progress(step, f"Automation → {app}" if gid != "shortcuts" else "Shortcuts", hint, progress)
         row = _run_surface_doctor(bin_name, timeout, extra)
         row["id"] = gid
         row["title"] = f"Automation → {app}" if gid != "shortcuts" else "Shortcuts"
@@ -612,10 +659,11 @@ def do_guided_onboard(index_contacts: bool, skip_optional: bool = False, skip_si
 
     # 8–9 optional
     optional = [
-        ("mail", "grok-mail", 5, "Mail", True),
-        ("icloud", "grok-icloud", 8, "iCloud Drive", False),
+        ("mail", "grok-mail", 5, "Mail", True, 8, "optional; version check only"),
+        ("icloud", "grok-icloud", 8, "iCloud Drive", False, 9, "optional"),
     ]
-    for gid, bin_name, timeout, label, version_only in optional:
+    for gid, bin_name, timeout, label, version_only, step, hint in optional:
+        emit_progress(step, label, hint, progress)
         if skip_optional:
             gates.append({"id": gid, "title": label, "ok": True, "optional": True, "skipped": True})
             continue
@@ -656,6 +704,7 @@ def do_guided_onboard(index_contacts: bool, skip_optional: bool = False, skip_si
         gates.append(row)
 
     # 10) Signature — ask, never bake a default line
+    emit_progress(10, "Outgoing signature", "asks; does not invent a line", progress)
     line = common.read_signature()
     if line is None and not skip_signature:
         gate = {
@@ -684,12 +733,20 @@ def do_guided_onboard(index_contacts: bool, skip_optional: bool = False, skip_si
     })
 
     # 11) Reindex once
-    indexed = do_reindex(False, None, index_contacts, index_bodies=index_bodies)
+    if quick:
+        reindex_hint = "quick: Messages metadata only; skips notes, calendar, reminders"
+    else:
+        reindex_hint = "often several minutes; calendar can take 20+ minutes. Use --quick to skip that walk"
+    emit_progress(11, "Local reindex", reindex_hint, progress)
+    if progress and not quick:
+        os.environ.setdefault("GROK_CALENDAR_PROGRESS", "1")
+    indexed = do_reindex(False, None, index_contacts, index_bodies=index_bodies, quick=quick)
     gate = {
         "id": "reindex",
         "title": "Local reindex",
         "ok": bool(indexed.get("ok")),
         "indexes": indexed.get("indexes"),
+        "quick": bool(quick),
     }
     if not gate["ok"]:
         # pending_allow on a surface — point at Automation, do not loop
@@ -705,11 +762,12 @@ def do_guided_onboard(index_contacts: bool, skip_optional: bool = False, skip_si
         "tool": common.TOOL,
         "version": VERSION,
         "mode": "guided",
+        "quick": bool(quick),
         "links": links,
         "gates": gates,
         "indexes": indexed.get("indexes"),
         "signatureSet": bool(line),
-        "message": "Guided onboard complete.",
+        "message": "Guided onboard complete." if not quick else "Guided onboard complete (quick: Messages metadata only).",
     }
     return payload, 0
 
@@ -735,15 +793,16 @@ def emit_guided(data: dict, as_json: bool) -> None:
         if not gate.get("ok") and gate.get("settingsPath"):
             print(f"       → {gate['settingsPath']}")
 
-def do_onboard(full: bool, index_contacts: bool, index_bodies: bool = False) -> dict:
+def do_onboard(full: bool, index_contacts: bool, index_bodies: bool = False, quick: bool = False) -> dict:
     links = [common.link_if_needed(name) for name in ("grok-desk",) + common.TOOLS]
     doctors = safe_doctors()
-    indexed = do_reindex(full, None, index_contacts, index_bodies=index_bodies)
+    indexed = do_reindex(full, None, index_contacts, index_bodies=index_bodies, quick=quick)
     ok = indexed["ok"]
     return {
         "ok": ok,
         "tool": common.TOOL,
         "version": VERSION,
+        "quick": bool(quick),
         "links": links,
         "doctors": doctors,
         "indexes": indexed["indexes"],
@@ -904,6 +963,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="With --guided, continue reindex when no signature is stored (user chose none)",
     )
+    onboard.add_argument(
+        "--quick",
+        action="store_true",
+        help="Same gates and exit codes. Reindex Messages metadata only; skip notes, calendar, and reminders indexing.",
+    )
     add_json(onboard)
 
     reindex = sub.add_parser("reindex", help="Build or update local caches")
@@ -913,6 +977,11 @@ def build_parser() -> argparse.ArgumentParser:
     reindex.add_argument("--index-bodies", action="store_true", help="Store Messages text and Notes bodies. Default is metadata only.")
     reindex.add_argument("--past-days", type=int, default=None, help="Calendar window before today (default 30, or GROK_CALENDAR_PAST_DAYS)")
     reindex.add_argument("--future-days", type=int, default=None, help="Calendar window after today (default 90, or GROK_CALENDAR_FUTURE_DAYS)")
+    reindex.add_argument(
+        "--quick",
+        action="store_true",
+        help="Skip notes, calendar, and reminders unless --only is set. When calendar is included, default window is past 7 / next 7 days.",
+    )
     add_json(reindex)
 
     status = sub.add_parser("status", help="Unified caches + lean doctor probes across CLIs")
@@ -982,7 +1051,15 @@ def main(argv=None) -> int:
             onboard_ping.maybe_ping()
         return 0
     if args.cmd == "reindex":
-        data = do_reindex(args.full, args.only, args.index_contacts, getattr(args, "past_days", None), getattr(args, "future_days", None), index_bodies=bool(getattr(args, "index_bodies", False)))
+        data = do_reindex(
+            args.full,
+            args.only,
+            args.index_contacts,
+            getattr(args, "past_days", None),
+            getattr(args, "future_days", None),
+            index_bodies=bool(getattr(args, "index_bodies", False)),
+            quick=bool(getattr(args, "quick", False)),
+        )
         emit(data, as_json)
         return 0 if data["ok"] else 1
     if args.cmd == "onboard":
@@ -992,12 +1069,19 @@ def main(argv=None) -> int:
                 skip_optional=False,
                 skip_signature=bool(getattr(args, "skip_signature", False)),
                 index_bodies=bool(getattr(args, "index_bodies", False)),
+                quick=bool(getattr(args, "quick", False)),
+                progress=not as_json,
             )
             emit_guided(data, as_json)
             if code == 0 and data.get("ok"):
                 onboard_ping.maybe_ping()
             return code
-        data = do_onboard(args.full, args.index_contacts, index_bodies=bool(getattr(args, "index_bodies", False)))
+        data = do_onboard(
+            args.full,
+            args.index_contacts,
+            index_bodies=bool(getattr(args, "index_bodies", False)),
+            quick=bool(getattr(args, "quick", False)),
+        )
         emit(data, as_json)
         return 0 if data.get("ok") else 1
 
