@@ -2,7 +2,7 @@
 
 Let an AI agent read and (with your yes) act on Messages, Notes, Calendar, Reminders, and the rest of your Mac — locally, through shell CLIs. No cloud Apple API.
 
-<!-- TODO: add a short demo GIF at docs/demo.gif (first win: grok-messages unread). Do not fabricate one. -->
+![Apple Desk demo: install, guided onboard, unread Messages, dry-run send](docs/demo.gif)
 
 **Roadmap (not built):** a single MCP server. Today every surface is a `grok-*` CLI you run in a shell. See [`mcp/README.md`](./mcp/README.md).
 
