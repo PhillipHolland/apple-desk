@@ -16,6 +16,7 @@ This skill stays **thin**. It does not embed the codebase. Install the repo, the
 ## Install (pull the repo)
 
 ```bash
+# GROK_DESK_NO_TELEMETRY=1 skips the one anonymous onboard ping
 curl -fsSL https://raw.githubusercontent.com/PhillipHolland/apple-desk/main/scripts/install.sh | bash
 # or:
 mkdir -p ~/Developer && cd ~/Developer

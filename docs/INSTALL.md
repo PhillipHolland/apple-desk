@@ -14,16 +14,17 @@ https://github.com/PhillipHolland/apple-desk
 curl -fsSL https://raw.githubusercontent.com/PhillipHolland/apple-desk/main/scripts/install.sh | bash
 ```
 
-That script clones or `git pull --ff-only` into `~/Developer/apple-desk`, runs `scripts/onboard.sh`, and adds `~/bin` and `~/.local/bin` to PATH in one shell rc (idempotent; no sudo). A stale `~/bin/grok-desk` symlink is replaced with this checkout's binary.
+That script clones or `git pull --ff-only` into `~/Developer/apple-desk`, links every `grok-*` CLI, adds `~/bin` and `~/.local/bin` to PATH in one shell rc (idempotent; no sudo), then runs `grok-desk onboard --guided --quick`. Linking and PATH always finish. A failed doctor gate does not abort the install; the script prints `Installed, but onboarding needs these fixes; re-run grok-desk onboard --guided` and exits with that onboard code. A stale `~/bin/grok-desk` symlink is replaced with this checkout's binary.
 
 Then open a new terminal (or `export PATH="$HOME/bin:$HOME/.local/bin:$PATH"`) and:
 
 ```bash
-grok-desk onboard --guided --quick
 grok-messages unread
+# if install stopped at a permission gate:
+grok-desk onboard --guided
 ```
 
-Override the clone location with `APPLE_DESK_HOME`. Opt out of the anonymous onboard ping with `GROK_DESK_NO_TELEMETRY=1`.
+Override the clone location with `APPLE_DESK_HOME`. Opt out of the anonymous onboard ping with `GROK_DESK_NO_TELEMETRY=1` (also printed by `install.sh`).
 
 ## Clone or pull (manual)
 

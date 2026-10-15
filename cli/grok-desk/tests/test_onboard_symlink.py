@@ -54,7 +54,7 @@ def main() -> int:
     proc = subprocess.run(["bash", str(ONBOARD)], env=env, text=True, capture_output=True)
     check("onboard links-only exits 0", proc.returncode == 0)
     check("did not invoke grok-desk onboard", "Running grok-desk onboard" not in proc.stdout)
-    check("relinked grok-desk", "relinked grok-desk" in proc.stdout)
+    check("relinked grok-desk once", proc.stdout.count("relinked grok-desk") == 1)
     check("~/bin/grok-desk now points at this checkout", Path(os.readlink(dest)) == SRC)
     check("~/.local/bin/grok-desk now points at this checkout", Path(os.readlink(local)) == SRC)
     check("stale binary was not deleted", old.is_file())

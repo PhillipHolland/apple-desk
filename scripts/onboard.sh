@@ -6,9 +6,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 mkdir -p "$HOME/bin" "$HOME/.local/bin"
 link_if_needed() {
+  # Prints only keep|linked|relinked on stdout. Caller prints one line per CLI.
   local src="$1" dest="$2"
-  local name current resolved_current resolved_src
-  name="$(basename "$dest")"
+  local current resolved_current resolved_src
   if [[ -L "$dest" ]]; then
     current="$(readlink "$dest")" || current=""
     if [[ -n "$current" && "$current" != /* ]]; then
@@ -21,22 +21,33 @@ link_if_needed() {
       resolved_current=""
     fi
     if [[ -n "$resolved_current" && "$resolved_current" == "$resolved_src" && -x "$dest" ]]; then
-      echo "keep $name"
+      echo "keep"
       return
     fi
     ln -sfn "$src" "$dest"
-    echo "relinked $name -> $src"
+    echo "relinked"
     return
   fi
   if [[ -e "$dest" ]]; then
     if [[ -x "$dest" ]]; then
-      echo "keep $name"
+      echo "keep"
       return
     fi
     rm -f "$dest"
   fi
   ln -sfn "$src" "$dest"
-  echo "linked $name -> $src"
+  echo "linked"
+}
+
+print_link() {
+  local name="$1" src="$2" a="$3" b="$4"
+  if [[ "$a" == "relinked" || "$b" == "relinked" ]]; then
+    echo "relinked $name -> $src"
+  elif [[ "$a" == "linked" || "$b" == "linked" ]]; then
+    echo "linked $name -> $src"
+  else
+    echo "keep $name"
+  fi
 }
 symlink_outside_root() {
   local dest="$1" target dir base resolved
@@ -74,8 +85,9 @@ for name in grok-reminders grok-notes grok-contacts grok-messages grok-calendar 
       continue
     fi
   fi
-  link_if_needed "$src" "$HOME/bin/$name"
-  link_if_needed "$src" "$HOME/.local/bin/$name"
+  bin_action="$(link_if_needed "$src" "$HOME/bin/$name")"
+  local_action="$(link_if_needed "$src" "$HOME/.local/bin/$name")"
+  print_link "$name" "$src" "$bin_action" "$local_action"
 done
 echo "Indexes stay on this Mac under ~/.cache/grok-*. They are not uploaded."
 if [[ "${GROK_DESK_LINKS_ONLY:-}" == "1" ]]; then

@@ -27,12 +27,14 @@ No Homebrew formula. No sudo.
 ## 60-second quickstart
 
 ```bash
+# Skip the one anonymous onboard ping: GROK_DESK_NO_TELEMETRY=1
 curl -fsSL https://raw.githubusercontent.com/PhillipHolland/apple-desk/main/scripts/install.sh | bash
 # new terminal, or:
 export PATH="$HOME/bin:$HOME/.local/bin:$PATH"
-grok-desk onboard --guided --quick
 grok-messages unread
 ```
+
+The installer links the CLIs, writes `~/bin` and `~/.local/bin` into your shell rc, then runs `grok-desk onboard --guided --quick`. Linking and PATH finish even if a doctor gate fails. If onboard stops, fix the printed System Settings path and re-run `grok-desk onboard --guided`.
 
 **Success looks like:** unread message count, unread chat count, and a short page of chat labels. No message text. Nothing is marked read.
 
