@@ -167,7 +167,7 @@ def main():
     check("dry-run does not script Messages", code == 0 and guard.payloads == [] and guard.relaunches == [] and guard.procs == [])
 
     code, out, err, guard = run(
-        ["send", "--to", HANDLE, "--text", BODY, "--force", "--confirm", token, "--json"],
+        ["send", "--to", HANDLE, "--text", BODY, "--force", "--confirm=" + token, "--json"],
         ["ok-receipt"],
     )
     data = json.loads(out)
@@ -178,7 +178,7 @@ def main():
 
     token, _, _ = token_for()
     code, out, err, guard = run(
-        ["send", "--to", HANDLE, "--text", BODY, "--force", "--confirm", token, "--json"],
+        ["send", "--to", HANDLE, "--text", BODY, "--force", "--confirm=" + token, "--json"],
         ["ok"],
     )
     data = json.loads(out)
@@ -187,7 +187,7 @@ def main():
 
     token, _, _ = token_for()
     code, out, err, guard = run(
-        ["send", "--to", HANDLE, "--text", BODY, "--force", "--confirm", token, "--json"],
+        ["send", "--to", HANDLE, "--text", BODY, "--force", "--confirm=" + token, "--json"],
         ["timeout", "ok-receipt"],
     )
     data = json.loads(out)
@@ -196,7 +196,7 @@ def main():
 
     token, _, _ = token_for()
     code, out, err, guard = run(
-        ["send", "--to", HANDLE, "--text", BODY, "--force", "--confirm", token, "--unstick-once", "--json"],
+        ["send", "--to", HANDLE, "--text", BODY, "--force", "--confirm=" + token, "--unstick-once", "--json"],
         ["timeout", "ok-receipt"],
     )
     data = json.loads(out)
@@ -206,7 +206,7 @@ def main():
 
     token, _, _ = token_for()
     code, out, err, guard = run(
-        ["send", "--to", HANDLE, "--text", BODY, "--force", "--confirm", token, "--unstick-once", "--json"],
+        ["send", "--to", HANDLE, "--text", BODY, "--force", "--confirm=" + token, "--unstick-once", "--json"],
         ["timeout", "timeout", "ok-receipt"],
     )
     check("second timeout stops", code == 4 and json.loads(out)["error"] == "automation_timeout")

@@ -116,23 +116,40 @@ def main():
     check("token file has no message body", BODY not in raw and "text" not in stored and stored.get("text_sha256"))
     check("token file binds the recipient", stored.get("recipient", "").startswith("to:" + HANDLE))
     check("token expires in 10 minutes", int(stored.get("expires") or 0) - int(time.time()) <= 600)
+    check("token is argv-safe", token and not token.startswith("-"))
 
-    code, out, err, guard = run(["send", "--to", HANDLE, "--text", BODY, "--force", "--confirm", "x", "--json"])
+    code, out, err, guard = run(["send", "--to", HANDLE, "--text", BODY, "--force", "--confirm=x", "--json"])
     check("short token mismatches", code == 2 and json.loads(out)["error"] == "confirm_mismatch" and guard.send == [])
 
-    code, out, err, guard = run(["send", "--to", HANDLE, "--text", OTHER, "--force", "--confirm", token, "--json"])
+    code, out, err, guard = run(["send", "--to", HANDLE, "--text", OTHER, "--force", "--confirm=" + token, "--json"])
     check("text mismatch does not send", code == 2 and json.loads(out)["error"] == "confirm_mismatch" and guard.send == [])
     check("mismatch keeps the token", path.is_file() and BODY not in path.read_text(encoding="utf-8"))
 
-    code, out, err, guard = run(["send", "--to", "other@example.invalid", "--text", BODY, "--force", "--confirm", token, "--json"])
+    code, out, err, guard = run(["send", "--to", "other@example.invalid", "--text", BODY, "--force", "--confirm=" + token, "--json"])
     check("recipient mismatch does not send", code == 2 and json.loads(out)["error"] == "confirm_mismatch" and guard.send == [])
 
     stored = json.loads(path.read_text(encoding="utf-8"))
     stored["expires"] = int(time.time()) - 5
     path.write_text(json.dumps(stored) + "\n", encoding="utf-8")
     os.chmod(path, 0o600)
-    code, out, err, guard = run(["send", "--to", HANDLE, "--text", BODY, "--force", "--confirm", token, "--json"])
+    code, out, err, guard = run(["send", "--to", HANDLE, "--text", BODY, "--force", "--confirm=" + token, "--json"])
     check("expired token does not send", code == 2 and json.loads(out)["error"] == "confirm_expired" and guard.send == [])
+
+    seen = {"n": 0}
+    real_token = cli.secrets.token_urlsafe
+
+    def first_dash(n):
+        seen["n"] += 1
+        if seen["n"] == 1:
+            return "-dash" + real_token(n).lstrip("-")
+        return real_token(n)
+
+    cli.secrets.token_urlsafe = first_dash
+    try:
+        retried = cli.issue_confirm("to:" + HANDLE, BODY, True)
+    finally:
+        cli.secrets.token_urlsafe = real_token
+    check("issue_confirm retries a leading dash", not retried.startswith("-") and seen["n"] >= 2)
 
     if failures:
         print("failures:", ", ".join(failures))

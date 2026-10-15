@@ -87,7 +87,7 @@ def main():
             failures.append(name)
             print("FAIL", name)
 
-    check("version is 0.1.9", cli.VERSION == "0.1.9")
+    check("version is 0.1.10", cli.VERSION == "0.1.10")
     check("messages cache is not the live cache", REAL_HOME not in str(messages_index.db_path("grok-messages")))
     check("chat.db stand-in is not the live library", REAL_HOME not in str(messages_index.CHAT_DB))
 

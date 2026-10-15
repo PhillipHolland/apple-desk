@@ -10,18 +10,18 @@ This checkout is the public monorepo https://github.com/PhillipHolland/apple-des
 
 | Tool | Source version | Path in this checkout |
 | --- | --- | --- |
-| grok-desk | 0.1.8 | `cli/grok-desk/bin/grok-desk` |
-| grok-reminders | 0.1.5 | `cli/grok-reminders/bin/grok-reminders` |
-| grok-notes | 0.2.3 | `cli/grok-notes/bin/grok-notes` |
-| grok-contacts | 0.1.3 | `cli/grok-contacts/bin/grok-contacts` |
-| grok-messages | 0.2.11 | `cli/grok-messages/bin/grok-messages` |
-| grok-calendar | 0.1.6 | `cli/grok-calendar/bin/grok-calendar` |
+| grok-desk | 0.1.10 | `cli/grok-desk/bin/grok-desk` |
+| grok-reminders | 0.1.6 | `cli/grok-reminders/bin/grok-reminders` |
+| grok-notes | 0.2.4 | `cli/grok-notes/bin/grok-notes` |
+| grok-contacts | 0.1.4 | `cli/grok-contacts/bin/grok-contacts` |
+| grok-messages | 0.2.14 | `cli/grok-messages/bin/grok-messages` |
+| grok-calendar | 0.1.7 | `cli/grok-calendar/bin/grok-calendar` |
 | grok-shortcuts | 0.1.2 | `cli/grok-shortcuts/bin/grok-shortcuts` |
 | grok-mail | 0.1.3 | `cli/grok-mail/bin/grok-mail` |
 | grok-icloud | 0.1.1 | `cli/grok-icloud/bin/grok-icloud` |
 | grok-spotlight | 0.1.0 | `cli/grok-spotlight/bin/grok-spotlight` |
 | grok-focus | 0.1.1 | `cli/grok-focus/bin/grok-focus` |
-| grok-safari | 0.1.2 | `cli/grok-safari/bin/grok-safari` |
+| grok-safari | 0.1.3 | `cli/grok-safari/bin/grok-safari` |
 
 There is no separate `~/Developer/grok-notes`, `~/Developer/grok-contacts`, or `~/Developer/grok-messages` tree in this checkout. RemCTL stays an upstream binary. Do not vendor it.
 
@@ -61,7 +61,7 @@ Writes were not re-run. Create, edit, and delete commands are present in each CL
 
 ## CRUD present vs honest gaps
 
-Reminders in this checkout are `grok-reminders` 0.1.5 (`lists`, `today`, `upcoming`, `search`, `show`, `add`, `done`, `delete`, `flag`, `move`). `add`, `flag`, and `move` stay dry-run unless `--force`. Sections and smart lists are not on this JXA path. The 2026-10-03 RemCTL binary is a separate upstream tool, not a CLI in this repo. Calendar and Mail are their own CLIs in `cli/`.
+Reminders in this checkout are `grok-reminders` 0.1.6 (`lists`, `today`, `upcoming`, `search`, `show`, `add`, `done`, `delete`, `flag`, `move`). `add`, `flag`, and `move` stay dry-run unless `--force`. Sections and smart lists are not on this JXA path. The 2026-10-03 RemCTL binary is a separate upstream tool, not a CLI in this repo. Calendar and Mail are their own CLIs in `cli/`.
 
 Notes: create/edit/append/move/delete note and folder, checklist add, attachment list, share flag read, cached search. Cannot pin, lock, toggle checklist checked, duplicate, drawings/scans/tables/audio, attachment bytes, real tag objects, start a share. `pin`/`lock` commands exist and exit unsupported.
 

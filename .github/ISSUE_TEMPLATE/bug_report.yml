@@ -1,0 +1,45 @@
+name: Bug report
+description: Something broke on a Mac or an offline test failed
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Redact names, phone numbers, emails, chat text, and home-directory paths before pasting doctor output.
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      description: System Settings → General → About, or `sw_vers`.
+      placeholder: "e.g. 15.6.1"
+    validations:
+      required: true
+  - type: input
+    id: cli
+    attributes:
+      label: CLI and version
+      description: Output of `grok-desk --version` or the specific `grok-* --version` that failed.
+      placeholder: "e.g. grok-desk 0.1.10"
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: grok-desk doctor output (private data redacted)
+      description: Paste `grok-desk doctor --json` or the failing CLI's `doctor --json`. Strip names, handles, emails, phone numbers, signature text, and absolute home paths.
+      render: json
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: Command, expected result, actual result, exit code.
+    validations:
+      required: true
+  - type: textarea
+    id: extra
+    attributes:
+      label: Extra context
+      description: Optional. Do not paste chat.db rows or message bodies.

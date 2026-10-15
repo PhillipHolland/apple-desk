@@ -536,6 +536,10 @@ def _attach_confirm(preview: dict, binding: str, text: str, as_json: bool) -> No
 
 def issue_confirm(binding: str, text: str, as_json: bool) -> str:
     token = secrets.token_urlsafe(32)
+    # argparse treats a following word that starts with "-" as another flag, so
+    # `--confirm TOKEN` would drop a leading-dash token and send nothing.
+    while token.startswith("-"):
+        token = secrets.token_urlsafe(32)
     payload = {
         "token": token,
         "recipient": binding,

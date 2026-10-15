@@ -26,7 +26,7 @@ If you already have a Shortcut that opens Reminders or adds a reminder to a name
 
 ## What this CLI can do instead
 
-These commands exist in grok-reminders 0.1.5. `done` is the complete command. There is no `complete` subcommand. `flag` and `move` stay a dry-run unless you pass `--force`. A dry-run does not call Reminders.app. `delete` also exists and refuses without `--force`. It is one id only, and it is not a section tool.
+These commands exist in grok-reminders 0.1.6. `done` is the complete command. There is no `complete` subcommand. `flag` and `move` stay a dry-run unless you pass `--force`. A dry-run does not call Reminders.app. `delete` also exists and refuses without `--force`. It is one id only, and it is not a section tool.
 
 ```bash
 grok-reminders doctor

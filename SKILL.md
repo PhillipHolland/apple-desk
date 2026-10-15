@@ -16,6 +16,9 @@ This skill stays **thin**. It does not embed the codebase. Install the repo, the
 ## Install (pull the repo)
 
 ```bash
+# GROK_DESK_NO_TELEMETRY=1 skips the one anonymous onboard ping
+curl -fsSL https://raw.githubusercontent.com/PhillipHolland/apple-desk/main/scripts/install.sh | bash
+# or:
 mkdir -p ~/Developer && cd ~/Developer
 git clone https://github.com/PhillipHolland/apple-desk.git apple-desk
 # or: git -C apple-desk pull --ff-only
@@ -23,7 +26,7 @@ cd ~/Developer/apple-desk
 ./scripts/onboard.sh
 ```
 
-No sudo. Symlinks land in `~/bin` and `~/.local/bin`. Details: `docs/INSTALL.md` in the repo. Clone URL is the public repo: https://github.com/PhillipHolland/apple-desk.
+No sudo. Symlinks land in `~/bin` and `~/.local/bin`. There is no MCP server (roadmap, not built). Details: `docs/INSTALL.md` in the repo. Clone URL is the public repo: https://github.com/PhillipHolland/apple-desk.
 
 Private on the Mac only: `~/.cache/grok-*`, `~/.config/grok-desk/signature`. Never commit or upload them. Never copy `chat.db`.
 
@@ -31,6 +34,8 @@ Private on the Mac only: `~/.cache/grok-*`, `~/.config/grok-desk/signature`. Nev
 
 ```bash
 grok-desk onboard --guided
+# faster first win (same gates; skips notes/calendar/reminders index):
+grok-desk onboard --guided --quick
 # after the user clicks Allow:
 grok-desk onboard --guided
 ```

@@ -1,6 +1,6 @@
 # grok-desk
 
-Local onboarding for Apple Desk. Version 0.1.8.
+Local onboarding for Apple Desk. Version 0.1.10.
 
 Builds search caches on this Mac so later lookups do not walk Notes or `chat.db` from scratch. Nothing is uploaded. No Keychain. No Passwords.
 
@@ -8,6 +8,7 @@ Builds search caches on this Mac so later lookups do not walk Notes or `chat.db`
 grok-desk doctor --json
 grok-desk onboard --json
 grok-desk onboard --guided --json   # one permission gate at a time; stops with Settings path
+grok-desk onboard --guided --quick --json  # same gates; skip notes/calendar/reminders index
 grok-desk onboard --guided --skip-signature --json  # continue when user chose no signature
 grok-desk reindex --json
 grok-desk reindex --full --only messages --json

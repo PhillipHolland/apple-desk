@@ -1,0 +1,26 @@
+name: Feature request
+description: Propose a CLI, flag, or docs change
+title: "[feature] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What an agent cannot do today
+      description: The Mac task that is missing or awkward. Not a cloud Apple API.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed shape
+      description: CLI name, flags, dry-run / --force behavior. MCP is roadmap, not built.
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why this belongs in Apple Desk
+      description: Keep writes gated. Do not ask for send without a human yes.
+    validations:
+      required: true
