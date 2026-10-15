@@ -237,7 +237,7 @@ def main():
 
     code, out, err, guard = run(["send", "--to", HANDLE, "--text", BODY, "--json"], EMPTY)
     token = json.loads(out)["confirmToken"]
-    code, out, err, guard = run(["send", "--to", HANDLE, "--text", BODY, "--force", "--confirm", token, "--json"], EMPTY)
+    code, out, err, guard = run(["send", "--to", HANDLE, "--text", BODY, "--force", "--confirm=" + token, "--json"], EMPTY)
     data = json.loads(out)
     check("force exits 0", code == 0 and err == "")
     check("force sent once", data.get("sent") is True and data.get("created") is True and len(guard.send) == 1)
@@ -257,7 +257,7 @@ def main():
 
     code, out, err, guard = run(["send", "--to", KEPT, "--text", BODY, "--json"], [KEPT_CHAT])
     token = json.loads(out)["confirmToken"]
-    code, out, err, guard = run(["send", "--to", KEPT, "--text", BODY, "--force", "--confirm", token, "--json"], [KEPT_CHAT])
+    code, out, err, guard = run(["send", "--to", KEPT, "--text", BODY, "--force", "--confirm=" + token, "--json"], [KEPT_CHAT])
     data = json.loads(out)
     payload = guard.send[0] if guard.send else {}
     check("existing force reuses the chat", code == 0 and data.get("sent") is True and "createIfMissing" not in payload)
